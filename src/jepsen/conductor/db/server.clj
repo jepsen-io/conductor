@@ -1,6 +1,7 @@
 (ns jepsen.conductor.db.server
   "Database automation for the Conductor server."
-  (:require [clojure [pprint :refer [pprint]]]
+  (:require [clojure [pprint :refer [pprint]]
+                     [string :as str]]
             [clojure.tools.logging :refer [info warn]]
             [clojure.java [io :as io]]
             [clj-commons.slingshot :refer [try+ throw+]]
@@ -48,7 +49,7 @@
   [test node]
   (c/su
     (write-properties!
-      {; DB
+      {; Postgres
        "spring.datasource.url" (str "jdbc:postgresql://"
                                     (-> test :roles :db rand/nth)
                                     ":5432/")
@@ -57,70 +58,69 @@
        "spring.datasource.password" "pw"
        "spring.datasource.hikari.maximum-pool-size" 64
 
-       ; Security
-       "conductor.security.default.encryptionKey" "abcdefg"
+       ; Redis
+       "conductor.redis.hosts" (->> (:roles test)
+                                    :queue
+                                    (mapv (fn [node]
+                                            ; We'll pretend each node is in its
+                                            ; own rack
+                                            (str node ":6379:" node)))
+                                    (str/join ","))
+       ; TODO: maybe later if we do cluster?
+       ;"conductor.redis.clustername" "jepsen"
+       "conductor.redis.workflowNamespacePrefix" "conductor"
+       "conductor.redis.queueNamespacePrefix"    "conductor_queues"
+       "conductor.redis.queuesNonQuorumPort"     6379
+
+       ; We're supposed to use Redis as the "primary store + queues"
+       "conductor.db.type"    "redis_standalone"
+       "conductor.queue.type" "redis_standalone"
+
+       ; And the archive/index store is Postgres
+       "conductor.archive.db.enabled" true
+       "conductor.archive.db.type" "postgres"
+       "conductor.archive.db.document.store.type" "postgres"
+
+       ; Async indexing of executions into Postgres
+       "conductor.app.asyncIndexingEnabled" true
+
+       ; Disable auth
        "conductor.security.enabled" "false"
-       "conductor.security.jwt.secret" "amVwc2Vu" ; Base64 "jepsen"
-       "conductor.security.jwt.exp" 3600
 
-       ; Automatically create admin users on authentication; we're just here to
-       ; do safety testing
-       "conductor.security.default.create-user-on-authentication" true
-       "conductor.security.default.roles" "ADMIN"
+       ; Distributed lock backed by Redis
+       "conductor.app.workflow-execution-lock-enabled" true
+       "conductor.workflow-execution-lock.type" "orkes_lock"
 
-       ; Worker keys
-       "conductor.security.default.workers.accessKeyId" worker-key
-       "conductor.security.default.workers.accessKeySecret" worker-secret
+       ; Misc engine settings
+       "conductor.secrets.type" "memory"
+       "conductor.id.generator" "time_based"
 
-       "conductor.enable.ui.serving"        true
-       "conductor.ui.event.monitor.enabled" true
+       ; UI
+       "conductor.enable.ui.serving" true
+       "conductor.ui.playground" false
+
+       ; Limits
+       "conductor.limits.maxWorkflowSizeInMiB" 20
+       "conductor.limits.maxTaskSizeInKiB" 20000
+
+       ; Metrics / actuator (what's an actuator?)
+       "management.endpoints.web.exposure.include" "prometheus,health,mappings"
+
        ; Not sure what this does; should we lower it?
-       "conductor.redis.eventExecutionPersistenceTTL" 86400
+       ;"conductor.redis.eventExecutionPersistenceTTL" 86400
 
-       ; These are marked "optimizations" in the example config
-       "conductor.workflow-execution-lock.type" "local_only"
        ; TODO: definitely want to mess with this
-       "conductor.app.lockLeaseTime"                  120000
-       "conductor.workflow.execution.maxTimeInMillis" 10000
-       "conductor.app.lockTimeToTry"                  10
-       "conductor.app.sweeper.sweepBatchSize"         10
-       "conductor.app.sweeperThreadCount"             10
-       ; TODO: investigate and tune this
-       "conductor.app.workflowOffsetTimeout"     30
-
-       "conductor.app.eventProcessorThreadCount" 200
+       ;"conductor.app.lockLeaseTime"                  120000
+       ;"conductor.workflow.execution.maxTimeInMillis" 10000
+       ;"conductor.app.lockTimeToTry"                  10
 
        ; TODO: check on these too
-       "conductor.postgres.workflowDefCacheRefreshInterval" 60
-       "conductor.postgres.taskDefCacheRefreshInterval"     60
-       "conductor.postgres.execution.caching.enabled"       true
+       ;"conductor.postgres.workflowDefCacheRefreshInterval" 60
+       ;"conductor.postgres.taskDefCacheRefreshInterval"     60
+       ;"conductor.postgres.execution.caching.enabled"       true
 
-       "conductor.workflow.indexing.indexOffTimeInSec"      2
-       "conductor.archive.db.indexer.indexOffTimeInSec"     2
-
-       ; Gosh these seem high
-       "server.tomcat.threads.max"              200
-       "server.tomcat.threads.min-spare"        50
-       "conductor.app.event.processing.enabled" true
-
-       ; Clean up job configurations
-       "conductor.postgres.eventExecutionCleanupEnabled"     true
-       "conductor.postgres.eventExecutionCleanupFrequency"   5
-       "conductor.postgres.eventExecutionCleanupBatchSize"   1000
-       "conductor.postgres.eventExecutionCleanupThreadCount" 2
-       "conductor.script.evaluator.contextPoolEnabled"       true
-
-       ; Partition manager
-       ; TODO: change this?
-       "conductor.archive.db.partitions.rowsThreshold" 50000000
-       ; Always clean up
-       "conductor.archive.db.partitions.minPartitionsForCleanup" 0
-       "conductor.archive.db.partitions.retentionDays" 30
-
-       ; Disable indexing worker
-       ; TODO: change this?
-       "conductor.archive.db.indexer.enabled" false
-
+       ;"conductor.workflow.indexing.indexOffTimeInSec"      2
+       ;"conductor.archive.db.indexer.indexOffTimeInSec"     2
        }
       properties-file)))
 
@@ -151,17 +151,13 @@
   db/Kill
   (start! [this test node]
     (c/su (cu/start-daemon!
-            {:env {"SPRING_PROFILES_ACTIVE" "dev"
-                   "LOCAL_HOST_IP" (cn/local-ip)}
+            {:env {"LOCAL_HOST_IP" (cn/local-ip)}
              :chdir dir
              :pidfile pid-file
              :logfile log-file}
             "/usr/bin/java"
             "-Xms2g" "-Xmx4g"
             (str "-DCONDUCTOR_CONFIG_FILE=" properties-file)
-            ; Not sure why this is in both the env and here, but... that's what
-            ; the example script does!
-            "-DSPRING_PROFILES_ACTIVE=dev"
             "-jar"
             jar-file)))
 
