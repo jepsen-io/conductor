@@ -30,7 +30,8 @@
 
   Workflow
   (datafy [w]
-    {:name       (.getWorkflowName w)
+    {:id         (.getWorkflowId w)
+     :name       (.getWorkflowName w)
      :version    (.getWorkflowVersion w)
      :priority   (.getPriority w)
      :status     (datafy (.getStatus w))

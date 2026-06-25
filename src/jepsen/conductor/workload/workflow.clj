@@ -1,7 +1,9 @@
 (ns jepsen.conductor.workload.workflow
   "A workload which creates workflows, asks Conductor to launch instances of
   them, and tries to verify that each execution runs to completion."
-  (:require [clojure.tools.logging :refer [info warn]]
+  (:require [bifurcan-clj [core :as b]
+                          [set :as bs]]
+            [clojure.tools.logging :refer [info warn]]
             [clojure [pprint :refer [pprint]]]
             [jepsen [checker :as checker]
                     [client :as client]
@@ -42,6 +44,63 @@
           (c/close! workflow-client)
           (c/close! api-client)))
 
+
+;; Generators
+
+(defrecord TrackWorkflowGen [gen completed pending]
+  gen/Generator
+  (op [this test ctx]
+    (when-let [[op gen'] (gen/op gen test (assoc ctx
+                                                 :completed completed
+                                                 :pending pending))]
+      [op (TrackWorkflowGen. gen' completed pending)]))
+
+  (update [this test ctx event]
+    (if (= :ok (:type event))
+      (case (:f event)
+        :start-workflow
+        (let [pending' (bs/add pending (:value event))
+              gen'     (gen/update gen test (assoc ctx
+                                                   :completed completed
+                                                   :pending pending')
+                                   event)]
+          (TrackWorkflowGen. gen' completed pending'))
+
+        :check-workflow
+        (let [{:keys [id status]} (:value event)]
+          (case status
+            ; In these cases, we assume it's done and don't need to look any
+            ; more
+            (:completed :failed :timed-out :terminated)
+            (let [pending'   (bs/remove pending id)
+                  completed' (bs/add completed id)
+                  gen'       (gen/update gen test (assoc ctx
+                                                         :completed completed'
+                                                         :pending pending')
+                                         event)]
+              (TrackWorkflowGen. gen' completed' pending'))
+
+            ; Otherwise, it's pending
+            (let [pending'   (bs/add pending id)
+                  completed' (bs/remove completed id)
+                  gen'       (gen/update gen test (assoc ctx
+                                                         :completed completed'
+                                                         :pending pending')
+                                         event)]
+              (TrackWorkflowGen. gen' completed' pending'))))
+
+        ; We don't care about this f
+        this)
+      ; Not an OK op
+      this)))
+
+(defn track-workflow-gen
+  "Wraps a generator in one which keeps track of the completed and pending
+  workflow IDs we know about. These are made available in nested generators via
+  :completed and :pending keys in the context."
+  [gen]
+  (TrackWorkflowGen. gen bs/empty bs/empty))
+
 (defn start-workflow-gen
   "Generates a series of start-workflow operations"
   []
@@ -51,41 +110,59 @@
              :version 1
              :input {"name" (str "jepsen " i)}}}))
 
-(defrecord CheckWorkflowGen [pending]
+(defrecord CheckGen [ctx-key]
   gen/Generator
   (op [this test ctx]
-    (if (seq pending)
-      [(gen/fill-in-op
-         {:f     :check-workflow
-          :value (rand/nth pending)}
-         ctx)
-       this]
-      [:pending this]))
+    (let [pool (get ctx ctx-key)
+          n       (b/size pool)]
+      (if (= 0 n)
+        [:pending this]
+        [(gen/fill-in-op
+           {:f     :check-workflow
+            :value (b/nth pool (rand/long n))}
+           ctx)
+         this])))
 
   (update [this test ctx event]
-    (if (and (= :ok (:type event))
-             (= :start-workflow (:f event)))
-      (update this :pending conj (:value event))
-      this)))
+    this))
 
 (defn check-workflow-gen
-  "A generator which listens for successful :start-workflow operations and
-  keeps track of their IDs, then periodically emits :check-workflow operations
-  for them."
-  []
-  (CheckWorkflowGen. []))
+  "A generator which emits check-workflow operations for either :pending or
+  :completed workflows. We use these to check on workflows throughout the
+  test."
+  [type]
+  (CheckGen. type))
 
-(defn gen
-  "Generator of workflow ops"
-  [opts]
-  (gen/any
-    (gen/stagger (* 10 (/ (:rate opts))) (start-workflow-gen))
-    (check-workflow-gen)))
+(defrecord FinalCheckGen []
+  gen/Generator
+  (op [this test ctx]
+    (gen/op
+      (->> (bs/union (:completed ctx) (:pending ctx))
+           (map (fn [workflow-id]
+                  {:f :check-workflow, :value workflow-id}))
+           (cons (gen/log (str "Final check of " (b/size (:completed ctx))
+                               " completed and " (b/size (:pending ctx))
+                               " pending workflows"))))
+      test ctx))
+
+  (update [this test ctx event]
+    this))
+
+(defn final-check-gen
+  "Emits one check-workflow op for each known workflow."
+  []
+  (FinalCheckGen.))
 
 (defn workload
   "Constructs a workflow workload given CLI options."
   [opts]
   {:client          (role/restrict-client :server (map->Client {}))
    :checker         (checker/unbridled-optimism)
-   :generator       (gen opts)
-   :final-generator nil})
+   :wrap-generator  track-workflow-gen
+   :generator       (gen/any
+                      (gen/stagger (/ 10 (:rate opts))
+                                   (start-workflow-gen))
+                      (gen/stagger (/ 100 (:rate opts))
+                                          (check-workflow-gen :completed))
+                      (check-workflow-gen :pending))
+   :final-generator (final-check-gen)})
