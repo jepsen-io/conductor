@@ -3,23 +3,17 @@
   Conductor."
   (:require [clojure [pprint :refer [pprint]]]
             [clojure.tools.logging :refer [info warn]]
-            [clojure.java [io :as io]
-                          [shell :refer [sh]]]
+            [clojure.java [io :as io]]
             [clj-commons.slingshot :refer [try+ throw+]]
             [jepsen [control :as c]
                     [db :as db]
                     [fs-cache :as fs-cache]
-                    [role :as role]]
+                    [role :as role]
+                    [util :as util]]
             [jepsen.conductor.base :refer :all]
-            [jepsen.control.util :as cu]
-            [jepsen.os.debian :as debian])
-  (:import (java.io File)
-           (java.nio.file StandardOpenOption)
-           (java.nio ByteBuffer)
-           (java.nio.channels FileChannel
-                              FileChannel$MapMode)
-           (java.security MessageDigest)
-           (java.util Base64)))
+            [jepsen.control [net :as cn]
+                            [util :as cu]]
+            [jepsen.os.debian :as debian]))
 
 (def dir
   "Where do we install the worker remotely?"
@@ -44,7 +38,7 @@
 (defn install!
   "Installs the worker."
   [test node]
-  (debian/install [:openjdk-25-jdk-headless])
+  (debian/install [:openjdk-25-jdk-headless :curl])
   (c/su (c/exec :mkdir :-p dir))
         (info "Uploading standard worker")
         (c/upload (str (:version test) "/lib/worker.jar")
@@ -71,20 +65,39 @@
   (setup! [this test node]
     (install! test node)
     (configure! test node)
+    ; Conductor seems to throw itself into a tight loop trying to reconnect if
+    ; the server isn't available on startup. To save ourselves from generating
+    ; ~15,000 lines of stacktrace per second, we'll wait until the node is
+    ; available
+    (let [url (worker-server-url test node)]
+      (util/await-fn (partial c/exec :curl url)
+                     {:log-message (str "Waiting for server API (" url
+                                        ") before starting")
+                      :log-interval 10000}))
     (db/start! this test node))
 
   (teardown! [this test node]
     (db/kill! this test node)
-    (c/su (c/exec :rm :-rf log-file pid-file)))
+    (c/su (c/exec :rm :-rf
+                  log-file
+                  (str log-file ".plain")
+                  pid-file)))
 
   db/LogFiles
   (log-files [this test node]
-    {log-file "std-worker.log"})
+    (c/su
+      ; We have to strip out all the ANSI color escapes if we ever want a hope
+      ; of reading these files
+      (let [plain-file (str log-file ".plain")]
+        (c/exec :ansifilter :--max-size "16G" :-p :-i log-file :-o plain-file)
+        {plain-file "std-worker.log"
+         properties-file "std-worker.properties"})))
 
   db/Kill
   (start! [this test node]
     (c/su (cu/start-daemon!
-            {:env {"SPRING_PROFILES_ACTIVE" "dev"}
+            {:env {"SPRING_PROFILES_ACTIVE" "dev"
+                   "LOCAL_HOST_IP" (cn/local-ip)}
              :chdir dir
              :pidfile pid-file
              :logfile log-file}

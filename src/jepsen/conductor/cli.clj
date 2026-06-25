@@ -108,13 +108,13 @@
   [opts]
   (let [[db queue & more] (:nodes opts)
         n (count more)
-        _ (assert (< 1 n) "Need at least four nodes to run a Conductor cluster.")
+        _ (assert (< 2 n) "Need at least five nodes to run a Conductor cluster.")
         more (vec more)
         c1   (math/round (* 1/3 n))
         c2   (math/round (* 2/3 n))]
     {:db            [db]
      :queue         [queue]
-     :conductor     (subvec more 0 c1)
+     :server        (subvec more 0 c1)
      :std-worker    (subvec more c1 c2)
      :worker        (subvec more c2)}))
 

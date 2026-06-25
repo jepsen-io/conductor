@@ -5,7 +5,7 @@
             [jepsen [control :as c]
                     [role :as role]]
             [jepsen.control.util :as cu]
-            [jepsen.conductor.db [conductor :as conductor]
+            [jepsen.conductor.db [server :as server]
                                  [std-worker :as std-worker]
                                  [worker :as worker]]
             [jepsen.os.debian :as debian]
@@ -19,6 +19,6 @@
   (role/db
     {:db         (postgres/db {})
      :queue      (redis/db)
-     :conductor  (conductor/db)
+     :server     (server/db)
      :std-worker (std-worker/db)
      :worker     (worker/db)}))

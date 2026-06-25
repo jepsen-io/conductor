@@ -25,7 +25,7 @@
 (defn workload
   "Constructs a workflow workload given CLI options."
   [opts]
-  {:client          (role/restrict-client :conductor (map->Client {}))
+  {:client          (role/restrict-client :server (map->Client {}))
    :checker         (checker/unbridled-optimism)
    :generator       nil
    :final-generator nil})
