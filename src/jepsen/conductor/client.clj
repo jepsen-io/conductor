@@ -1,7 +1,9 @@
 (ns jepsen.conductor.client
   "Wrapper for the Conductor Java client."
   (:require [clj-commons.slingshot :refer [try+ throw+]]
-            [clojure [pprint :refer [pprint]]]
+            [clojure [datafy :refer [datafy]]
+                     [pprint :refer [pprint]]]
+            [clojure.core.protocols :refer [Datafiable]]
             [clojure.tools.logging :refer [info warn]]
             [jepsen.conductor [base :refer :all]])
   (:import (io.orkes.conductor.client ApiClient)
@@ -13,6 +15,31 @@
            (com.netflix.conductor.sdk.workflow.def ConductorWorkflow)
            (com.netflix.conductor.sdk.workflow.def.tasks SimpleTask)
            (com.netflix.conductor.sdk.workflow.executor WorkflowExecutor)))
+
+; Coercing types
+(extend-protocol Datafiable
+  Workflow$WorkflowStatus
+  (datafy [status]
+    (condp identical? status
+      Workflow$WorkflowStatus/RUNNING    :running
+      Workflow$WorkflowStatus/COMPLETED  :completed
+      Workflow$WorkflowStatus/FAILED     :failed
+      Workflow$WorkflowStatus/TIMED_OUT  :timed-out
+      Workflow$WorkflowStatus/TERMINATED :terminated
+      Workflow$WorkflowStatus/PAUSED     :paused))
+
+  Workflow
+  (datafy [w]
+    {:name       (.getWorkflowName w)
+     :version    (.getWorkflowVersion w)
+     :priority   (.getPriority w)
+     :status     (datafy (.getStatus w))
+     :input      (into (sorted-map) (datafy (.getInput w)))
+     :output     (into (sorted-map) (datafy (.getOutput w)))
+     :start-time (.getStartTime w)}))
+
+
+; Opening clients
 
 (defn api-client*
   "Opens an API client to the given server URL."
@@ -86,15 +113,4 @@
 (defn get-workflow
   "Asks a WorkflowClient to fetch a workflow by string ID."
   [^WorkflowClient client ^String workflow-id]
-  (.getWorkflow client workflow-id true))
-
-(defn workflow-status
-  "Returns the current status of a workflow as a keyword."
-  [workflow-client workflow-id]
-  (condp identical? (.getStatus (get-workflow workflow-client workflow-id))
-    Workflow$WorkflowStatus/RUNNING    :running
-    Workflow$WorkflowStatus/COMPLETED  :completed
-    Workflow$WorkflowStatus/FAILED     :failed
-    Workflow$WorkflowStatus/TIMED_OUT  :timed-out
-    Workflow$WorkflowStatus/TERMINATED :terminated
-    Workflow$WorkflowStatus/PAUSED     :paused))
+  (datafy (.getWorkflow client workflow-id true)))

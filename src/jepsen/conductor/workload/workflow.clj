@@ -33,7 +33,7 @@
       :check-workflow
       (assoc op
              :type :ok
-             :value (c/workflow-status workflow-client (:value op)))))
+             :value (c/get-workflow workflow-client (:value op)))))
 
   (teardown! [this test])
 
