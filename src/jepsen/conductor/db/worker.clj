@@ -9,6 +9,7 @@
                     [db :as db]
                     [fs-cache :as fs-cache]
                     [role :as role]]
+            [jepsen.conductor.base :refer :all]
             [jepsen.control.util :as cu]
             [jepsen.os.debian :as debian])
   (:import (java.io File)
@@ -111,7 +112,9 @@
   db/Kill
   (start! [this test node]
     (c/su (cu/start-daemon!
-            {:env {}
+            {:env {"CONDUCTOR_SERVER_URL" (worker-server-url test node)
+                   "CONDUCTOR_AUTH_KEY" :TODO
+                   "CONDUCTOR_AUTH_SECRET" :TODO}
              :chdir dir
              :pidfile pid-file
              :logfile log-file}

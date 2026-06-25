@@ -1,7 +1,8 @@
 (ns jepsen.conductor.cli
   "Command-line entry point for Conductor tests"
   (:gen-class)
-  (:require [clojure [pprint :refer [pprint]]
+  (:require [clojure [math :as math]
+                     [pprint :refer [pprint]]
                      [set :as set]
                      [string :as str]]
             [clojure.tools.logging :refer [info warn]]
@@ -108,11 +109,14 @@
   (let [[db queue & more] (:nodes opts)
         n (count more)
         _ (assert (< 1 n) "Need at least four nodes to run a Conductor cluster.")
-        [conductors workers] (split-at (long (Math/floor (/ n 2))) more)]
+        more (vec more)
+        c1   (math/round (* 1/3 n))
+        c2   (math/round (* 2/3 n))]
     {:db            [db]
      :queue         [queue]
-     :conductor     (vec conductors)
-     :worker        (vec workers)}))
+     :conductor     (subvec more 0 c1)
+     :std-worker    (subvec more c1 c2)
+     :worker        (subvec more c2)}))
 
 (defn conductor-test
   "Takes CLI options and constructs a Jepsen test map"
@@ -236,8 +240,8 @@
       :parse-fn #(Long/parseLong %)
       :validate [pos? "Must be positive"]]
 
-     ["-v" "--version VERSION" "What version should we test? Should be a path to a JAR file on the control node."
-      :default "1.1.4"]
+     ["-v" "--version VERSION" "What version should we test? Should be a path to a directory containing lib/worker.jar and lib/server.jar on the control node."
+      :default "versions/5.3.2"]
 
      ["-w" "--workload NAME" "What workload should we run?"
       :default  :workflow
