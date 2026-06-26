@@ -91,8 +91,8 @@
        "conductor.archive.db.type" "postgres"
        "conductor.archive.db.document.store.type" "postgres"
 
-       ; Async indexing of executions into Postgres
-       "conductor.app.asyncIndexingEnabled" true
+       ; Don't do async indexing of executions into Postgres
+       "conductor.app.asyncIndexingEnabled" false
 
        ; Disable auth
        "conductor.security.enabled" "false"
