@@ -2,6 +2,7 @@
 /classes
 /checkouts
 /versions
+/notes
 profiles.clj
 pom.xml
 pom.xml.asc
