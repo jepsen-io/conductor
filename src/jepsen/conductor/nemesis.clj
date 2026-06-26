@@ -108,7 +108,8 @@
         _ (assert (map? roles))
         packages
         (->> (concat
-               ; Role-specific faults
+               ; Unfurl each role into a collection of nemesis packages for
+               ; that particular role.
                (mapcat (fn [[role nodes]]
                          (let [opts (if (= 1 (count nodes))
                                       ; For single-node roles, we don't bother
