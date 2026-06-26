@@ -46,7 +46,7 @@
   [test node]
   (let [version (:version test)]
     (c/su
-      (debian/install [:openjdk-25-jdk-headless :curl])
+      (debian/install [:openjdk-25-jdk-headless :curl :ansifilter])
       ; These jars are enormous; we can save time by not re-uploading the same
       ; version.
       (when-not (and (cu/file? version-file)

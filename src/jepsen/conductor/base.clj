@@ -52,3 +52,10 @@
   should talk to."
   [test worker-node]
   (server-url test (node-index test worker-node)))
+
+(defn terminal-status?
+  "Is this status keyword terminal, or could it change later?"
+  [status]
+  (case status
+    (:running :paused) false
+    (:completed :failed :timed-out :terminated) true))

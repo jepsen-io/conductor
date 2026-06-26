@@ -44,7 +44,7 @@
   [test node]
   (let [version (:version test)]
     (c/su
-      (debian/install [:openjdk-25-jdk-headless])
+      (debian/install [:openjdk-25-jdk-headless :ansifilter])
       (when-not (and (cu/file? version-file)
                      (= version (c/exec :cat version-file)))
         (c/su (c/exec :mkdir :-p dir))

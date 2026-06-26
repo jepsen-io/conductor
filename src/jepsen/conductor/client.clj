@@ -7,6 +7,7 @@
             [clojure.tools.logging :refer [info warn]]
             [jepsen.conductor [base :refer :all]])
   (:import (io.orkes.conductor.client ApiClient)
+           (com.netflix.conductor.client.exception ConductorClientException)
            (com.netflix.conductor.client.http TaskClient
                                               WorkflowClient)
            (com.netflix.conductor.common.metadata.workflow StartWorkflowRequest)
@@ -38,7 +39,6 @@
      :input      (into (sorted-map) (datafy (.getInput w)))
      :output     (into (sorted-map) (datafy (.getOutput w)))
      :start-time (.getStartTime w)}))
-
 
 ; Opening clients
 
@@ -82,19 +82,45 @@
 
 ; Define workflows
 
+(defn task
+  "Takes a map and constructs a Task. Keys are:
+
+      :type       The type of task. Right now this is just :simple for
+                  SimpleTask.
+      :name       The short name for the task.
+      :ref-name   The reference name for the task.
+      :input      A map of input name (e.g. \"prey\") to expression (e.g.
+                  \"${rabbit.output.location}\")."
+  [{:keys [type name ref-name input]}]
+  (case type
+    :simple (let [t (SimpleTask. name ref-name)]
+              (doseq [[name expr] input]
+                (.input t name expr))
+              t)))
+
+(defn workflow
+  "Takes a Clojure structure representing a workflow and returns a
+  ConductorWorkflow from it. The workflow should be a map with the following
+  keys:
+
+      :name     String name of the workflow
+      :version  Version number
+      :tasks    A collection of task maps.
+
+  For the task maps, see `task`."
+  [^WorkflowExecutor exec workflow]
+  (let [w (doto (ConductorWorkflow. exec)
+            (.setName (:name workflow))
+            (.setVersion (:version workflow)))]
+    (doseq [t (:tasks workflow)]
+      (.add w (task t)))
+    w))
+
 (defn register-workflow!
-  "Registers a workflow with the server."
-  [^WorkflowExecutor exec]
-  (let [workflow (doto (ConductorWorkflow. exec)
-                  (.setName "greetings")
-                  (.setVersion 1))
-        ; I think this is the name and reference name
-        task (doto (SimpleTask. "greet" "greet_ref")
-               (.input "name" "${workflow.input.name}"))
-        ; Add it to the workflow
-        _ (.add workflow task)
-        ; And register the workflow--dunno what the trues are.
-        _ (.registerWorkflow workflow true true)]))
+  "Registers a workflow with the server. See `workflow` for the definition of a
+  workflow map."
+  [workflow-exec workflow-map]
+  (.registerWorkflow (workflow workflow-exec workflow-map) true true))
 
 (defn start-workflow!
   "Starts a workflow... execution? I think? Returns the string workflow ID.
@@ -112,6 +138,32 @@
     workflow-id))
 
 (defn get-workflow
-  "Asks a WorkflowClient to fetch a workflow by string ID."
+  "Asks a WorkflowClient to fetch a workflow by string ID. Returns `{:id id,
+  :status :not-found}` if the workflow is not found; we do this so that the
+  existing checking machinery which looks at statuses can work seamlessly here
+  too."
   [^WorkflowClient client ^String workflow-id]
-  (datafy (.getWorkflow client workflow-id true)))
+  (try (datafy (.getWorkflow client workflow-id true))
+       (catch ConductorClientException e
+         (if (re-find #"Workflow .+ not found" (.getMessage e))
+           {:id     workflow-id
+            :status :not-found}
+           (throw e)))))
+
+;; Error handling
+
+(defmacro with-errors
+  "Takes an operation and a body. Evaluates body, converting common exceptions
+  to :info or :fail ops."
+  [op & body]
+  `(try ~@body
+        (catch ConductorClientException e#
+          (let [m# (.getMessage e#)]
+            (condp re-find m#
+              #"^Failed to connect to"
+              (assoc ~op :type :fail, :error :failed-to-connect)
+
+              #"^Internal Server Error"
+              (assoc ~op :type :info :error :internal-server-error)
+
+              (throw e#))))))
