@@ -33,13 +33,26 @@
 (def nemeses
   "Basic nemeses we have available."
   #{:kill
-    :pause
+    :kill-db
+    :kill-queue
+    :kill-server
+    :kill-std-worker
+    :kill-worker
     :partition
+    :partition-server
+    :pause
+    :pause-db
+    :pause-queue
+    :pause-server
+    :pause-std-worker
+    :pause-worker
     :packet
     :clock
-    ;:bitflip-file-chunks
-    ;:snapshot-file-chunks
-    ;:truncate-file
+    :clock-db
+    :clock-queue
+    :clock-server
+    :clock-std-worker
+    :clock-worker
     })
 
 (def file-corruption-nemeses
@@ -65,9 +78,6 @@
    [:pause]
    [:clock]
    [:packet]
-   ;[:bitflip-file-chunks  :kill]
-   ;[:snapshot-file-chunks :kill]
-   ;[:truncate-file        :kill]
    ; General chaos
    [:partition :pause :kill :clock
     ;:bitflip-file-chunks :snapshot-file-chunks :truncate-file-chunks
@@ -123,10 +133,12 @@
   [opts]
   (let [workload-name   (:workload opts)
         workload        ((workloads workload-name) opts)
+        opts            (assoc opts :roles (roles opts))
         db              (db/db opts)
         os              debian/os
         nemesis         (nemesis/package
                           {:db            db
+                           :roles         (:roles opts)
                            :nodes         (:nodes opts)
                            :stable-period (:nemesis-stable-period opts)
                            :interval      (:nemesis-interval opts)
@@ -159,6 +171,7 @@
               (gen/nemesis
                 [(gen/log "Recovering")
                  (:final-generator nemesis)
+                 (gen/sleep (:recovery-time opts))
                  (gen/log "Beginning final generator")])
               ; Final gen
               (->> (:final-generator workload)
@@ -174,7 +187,6 @@
           {:name     (test-name opts)
            :os       os
            :db       db
-           :roles    (roles opts)
            :checker  (checker/compose
                        {:perf       (checker/perf)
                         :clock      (checker/clock-plot)
@@ -233,6 +245,11 @@
       :default  10000
       :parse-fn read-string
       :validate [pos? "Must be a positive number."]]
+
+     [nil "--recovery-time SECONDS" "How long to wait after the end of fault injection before beginning the final generator."
+      :default 60
+      :parse-fn parse-long
+      :validate [(complement neg?) "Must not be negative"]]
 
      [nil "--time-limit SECONDS"
       "Excluding setup and teardown, how long should a test run for, in seconds?"

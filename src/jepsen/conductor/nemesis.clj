@@ -63,17 +63,73 @@
          (gen/time-limit period gen)
          final-gen]))))
 
+;; Role-specific packages
+
+(defn role-faults
+  "Takes a set of faults like #{:pause-db}, a role name, and the nodes involved
+  in that role. Returns a set of faults for a specific role like #{:pause}.
+
+  Some faults, like :partition, make no sense applied to single-node roles;
+  they are omitted.
+
+  General faults, like :pause or :kill, apply to every role."
+  [faults role nodes]
+  (->> faults
+       (keep (fn [fault]
+               (if-let [[m fault role']
+                        (re-find #"^(\w+)-(db|queue|server|std-worker|worker)$"
+                                 (name fault))]
+                 ; This is a role-specific fault
+                 (when (= (name role) role')
+                   (keyword fault))
+                 ; A general fault
+                 (case role
+                   ; I don't think the workers ever talk to each other
+                   ; directly, so we don't bother partitioning them. Likewise,
+                   ; no point in creating (internal) partitions for the
+                   ; single-node postgres or redis.
+                   (:std-worker :worker :db :queue)
+                   ((complement #{:partition}) fault)
+
+                   ; Otherwise you get to do everything.
+                   fault))))
+       set))
+
+(defn update-role-faults
+  "Takes CLI options and updates :faults to be specific to the given role."
+  [role opts]
+  (update opts :faults role-faults role (get (:roles opts) role)))
+
 (defn package
   "Takes CLI opts. Constructs a nemesis and generator for the test."
   [opts]
   (let [opts (update opts :faults set)
+        roles (:roles opts)
+        _ (assert (map? roles))
         packages
         (->> (concat
-               ; Standard packages
-               (nc/nemesis-packages opts)
+               ; Role-specific faults
+               (mapcat (fn [[role nodes]]
+                         (let [opts (if (= 1 (count nodes))
+                                      ; For single-node roles, we don't bother
+                                      ; with partitions, and we also use :all
+                                      ; for our pause and kill targets; no
+                                      ; sense in the other options.
+                                      (-> opts
+                                          (assoc-in [:pause :targets] [:all])
+                                          (assoc-in [:kill :targets] [:all]))
+                                      opts)]
+                           (->> opts
+                                (update-role-faults role)
+                                nc/nemesis-packages
+                                (map (partial role/restrict-nemesis-package role)))))
+                       roles)
                ; Custom packages
-               []))
+               [])
+             (filter :generator))
         nsp (:stable-period opts)]
     ;(info :packages (map (comp n/fs :nemesis) packages))
     (cond-> (nc/compose-packages packages)
-      nsp (assoc :generator (package-gen nsp packages)))))
+      ; Right now I'd actually like to run the full set of faults
+      ;nsp (assoc :generator (package-gen nsp packages))
+      )))
