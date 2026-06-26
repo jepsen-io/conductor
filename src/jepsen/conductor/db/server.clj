@@ -35,14 +35,24 @@
   "Where do we store the pidfile?"
   (str dir "/server.pid"))
 
+(def version-file
+  "Where do we stash the version string?"
+  (str dir "/version"))
+
 (defn install!
   "Installs the server."
   [test node]
-  (debian/install [:openjdk-25-jdk-headless])
-  (c/su (c/exec :mkdir :-p dir))
+  (let [version (:version test)]
+    (c/su
+      (debian/install [:openjdk-25-jdk-headless])
+      (when-not (and (cu/file? version-file)
+                     (= version (c/exec :cat version-file)))
+        (c/su (c/exec :mkdir :-p dir))
         (info "Uploading server")
         (c/upload (str (:version test) "/lib/server.jar")
-                  jar-file))
+                  jar-file)
+        (cu/write-file! version version-file)
+        (info "Uploaded server")))))
 
 (defn configure!
   "Writes out the properties file."

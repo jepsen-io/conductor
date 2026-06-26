@@ -37,14 +37,26 @@
   "Where do we store the pidfile?"
   (str dir "/std-worker.pid"))
 
+(def version-file
+  "Where do we stash the version string?"
+  (str dir "/version"))
+
 (defn install!
   "Installs the worker."
   [test node]
-  (debian/install [:openjdk-25-jdk-headless :curl])
-  (c/su (c/exec :mkdir :-p dir))
+  (let [version (:version test)]
+    (c/su
+      (debian/install [:openjdk-25-jdk-headless :curl])
+      ; These jars are enormous; we can save time by not re-uploading the same
+      ; version.
+      (when-not (and (cu/file? version-file)
+                     (= version (c/exec :cat version-file)))
+        (c/exec :mkdir :-p dir)
         (info "Uploading standard worker")
-        (c/upload (str (:version test) "/lib/worker.jar")
-                  jar-file))
+        (c/upload (str version "/lib/worker.jar")
+                  jar-file)
+        (cu/write-file! version version-file)
+        (info "Uploaded standard worker")))))
 
 (defn configure!
   "Writes out the properties file."

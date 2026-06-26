@@ -93,7 +93,8 @@
   (debian/install [:openjdk-25-jdk-headless])
   (c/su (c/exec :mkdir :-p dir))
         (info "Uploading worker")
-        (c/upload (worker-jar!) jar-file))
+        (c/upload (worker-jar!) jar-file)
+        (info "Uploaded worker"))
 
 (defrecord DB []
   db/DB
