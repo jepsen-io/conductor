@@ -287,10 +287,11 @@
   {:client          (role/restrict-client :server (map->Client {}))
    :checker         (completion-checker)
    :wrap-generator  track-workflow-gen
-   :generator       (gen/any
-                      (gen/stagger (/ 2 (:rate opts))
-                                   (start-workflow-gen))
-                      (gen/stagger (/ 32 (:rate opts))
-                                          (check-workflow-gen :completed))
-                      (check-workflow-gen :pending))
-   :final-generator (final-check-gen)})
+   :generator           (gen/any
+                          (gen/stagger (/ 2 (:rate opts))
+                                       (start-workflow-gen))
+                          (gen/stagger (/ 32 (:rate opts))
+                                       (check-workflow-gen :completed))
+                          (check-workflow-gen :pending))
+   :recovery-generator (check-workflow-gen :pending)
+   :final-generator    (final-check-gen)})

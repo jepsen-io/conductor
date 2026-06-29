@@ -188,12 +188,14 @@
         gen (gen/phases
               gen
               ; Recover
-              (gen/nemesis
-                [(gen/log "Recovering")
-                 (:final-generator nemesis)
-                 (gen/sleep (:recovery-time opts))
-                 (gen/log "Beginning final generator")])
+              (gen/log "Recovering")
+              (gen/nemesis (:final-generator nemesis))
+              (->> (:recovery-generator workload)
+                   (gen/stagger (/ (:recovery-rate opts)))
+                   (gen/clients)
+                   (gen/time-limit (:recovery-time opts)))
               ; Final gen
+              (gen/log "Beginning final generator")
               (->> (:final-generator workload)
                    (gen/time-limit (:final-time-limit opts))
                    gen/clients))
@@ -268,6 +270,11 @@
 
      ["-r" "--rate HZ" "Approximate request rate, in hz"
       :default  10000
+      :parse-fn read-string
+      :validate [pos? "Must be a positive number."]]
+
+     [nil "--recovery-rate HZ" "How fast should we run operations during the recovery period? We intentionally choose a lower value here to avoid overloading the system during recovery."
+      :default 10
       :parse-fn read-string
       :validate [pos? "Must be a positive number."]]
 
