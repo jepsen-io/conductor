@@ -19,7 +19,11 @@
   [opts]
   (role/db
     {:postgres   (postgres/db {})
-     :redis      ((get redis/db-types (:redis-type opts)) {})
+     :redis      (db/map-test (fn [test]
+                                (assoc test
+                                       :username "conductor"
+                                       :password "pw"))
+                                ((get redis/db-types (:redis-type opts)) {}))
      :server     {:db (server/db {})
                   :deps [:postgres :redis]}
      ; These do depend on the server, but they'll do their own coordination.

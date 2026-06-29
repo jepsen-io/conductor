@@ -77,8 +77,8 @@
                                             ; own rack
                                             (str node ":6379:" node ":pw")))
                                     (str/join ","))
-       "conductor.redis.username" "jepsen"
-       "conductor.redis.password" "jepsen"
+       "conductor.redis.username"                 "conductor"
+       "conductor.redis.password"                 "pw"
        "conductor.redis.workflowNamespacePrefix"  "conductor"
        "conductor.redis.queueNamespacePrefix"     "conductor_queues"
        "conductor.redis.queuesNonQuorumPort"      6379
