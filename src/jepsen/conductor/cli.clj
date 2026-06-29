@@ -235,6 +235,11 @@
       :parse-fn parse-comma-kws
       :validate [(partial every? db-node-targets) (cli/one-of db-node-targets)]]
 
+     [nil "--db-type TYPE" "Conductor's db.type setting. Either redis or postgres"
+      :default :redis
+      :parse-fn keyword
+      :validate [#{:postgres :redis} "Must be either redis or postgres."]]
+
      [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."
       :default  300
       :parse-fn read-string

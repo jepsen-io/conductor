@@ -84,9 +84,11 @@
        "conductor.redis.queuesNonQuorumPort"      6379
 
        ; We're supposed to use Redis as the "primary store + queues"
-       "conductor.db.type"    (case (:redis-type test)
-                                :single "redis_standalone"
-                                :cluster "redis_cluster")
+       "conductor.db.type"    (case (:db-type test)
+                                :postgres "postgres"
+                                :redis (case (:redis-type test)
+                                         :single "redis_standalone"
+                                         :cluster "redis_cluster"))
        "conductor.queue.type" (case (:redis-type test)
                                 :single "redis_standalone"
                                 :cluster "redis_cluster")
