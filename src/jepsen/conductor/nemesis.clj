@@ -77,7 +77,7 @@
   (->> faults
        (keep (fn [fault]
                (if-let [[m fault role']
-                        (re-find #"^(\w+)-(db|queue|server|std-worker|worker)$"
+                        (re-find #"^(\w+)-(postgres|redis|server|std-worker|worker)$"
                                  (name fault))]
                  ; This is a role-specific fault
                  (when (= (name role) role')
@@ -85,10 +85,9 @@
                  ; A general fault
                  (case role
                    ; I don't think the workers ever talk to each other
-                   ; directly, so we don't bother partitioning them. Likewise,
-                   ; no point in creating (internal) partitions for the
-                   ; single-node postgres or redis.
-                   (:std-worker :worker :db :queue)
+                   ; directly, so we don't bother partitioning them. PG is a
+                   ; single node, so same there.
+                   (:std-worker :worker :postgres)
                    ((complement #{:partition}) fault)
 
                    ; Otherwise you get to do everything.

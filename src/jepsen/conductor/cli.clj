@@ -1,11 +1,13 @@
 (ns jepsen.conductor.cli
   "Command-line entry point for Conductor tests"
   (:gen-class)
-  (:require [clojure [math :as math]
+  (:require [clj-commons.slingshot :refer [try+ throw+]]
+            [clojure [math :as math]
                      [pprint :refer [pprint]]
                      [set :as set]
                      [string :as str]]
             [clojure.tools.logging :refer [info warn]]
+            [dom-top.core :refer [loopr]]
             [jepsen [checker :as checker]
                     [cli :as cli]
                     [control :as control]
@@ -33,23 +35,23 @@
 (def nemeses
   "Basic nemeses we have available."
   #{:kill
-    :kill-db
-    :kill-queue
+    :kill-postgres
+    :kill-redis
     :kill-server
     :kill-std-worker
     :kill-worker
     :partition
     :partition-server
     :pause
-    :pause-db
-    :pause-queue
+    :pause-postgres
+    :pause-redis
     :pause-server
     :pause-std-worker
     :pause-worker
     :packet
     :clock
-    :clock-db
-    :clock-queue
+    :clock-postgres
+    :clock-redis
     :clock-server
     :clock-std-worker
     :clock-worker
@@ -113,20 +115,34 @@
          (when (seq n)
            (str " " (->> n (map name) sort (str/join ",")))))))
 
+(defn cut-vec
+  "Cuts a vector into a vector of disjoint subvectors, with each subvector's
+  count given by the corresponding value in `counts`."
+  [v counts]
+  (loopr [i 0
+          chunks []]
+         [c counts]
+         (recur (+ i c)
+                (conj chunks (subvec v i (+ i c))))
+         chunks))
+
 (defn roles
   "The Jepsen role map, given CLI options."
-  [opts]
-  (let [[db queue & more] (:nodes opts)
-        n (count more)
-        _ (assert (< 2 n) "Need at least five nodes to run a Conductor cluster.")
-        more (vec more)
-        c1   (math/round (* 1/3 n))
-        c2   (math/round (* 2/3 n))]
-    {:db            [db]
-     :queue         [queue]
-     :server        (subvec more 0 c1)
-     :std-worker    (subvec more c1 c2)
-     :worker        (subvec more c2)}))
+  [{:keys [nodes]}]
+  (let [n     (count nodes)
+        pg    1
+        redis 1
+        ; Divide the remaining nodes equally
+        m          (- n pg redis)
+        _          (when-not (<= 3 m)
+                     (throw+ {:type ::not-enough-nodes
+                              :have (count nodes)
+                              :need (+ pg redis 3)}))
+        server     (math/round (* 1/3 m))
+        std-worker (math/round (* 2/3 m))
+        worker     (- m server std-worker)]
+      (zipmap [:postgres :redis :server :std-worker :worker]
+              (cut-vec nodes [pg redis server std-worker worker]))))
 
 (defn conductor-test
   "Takes CLI options and constructs a Jepsen test map"

@@ -61,7 +61,7 @@
     (write-properties!
       {; Postgres
        "spring.datasource.url" (str "jdbc:postgresql://"
-                                    (-> test :roles :db rand/nth)
+                                    (-> test :roles :postgres rand/nth)
                                     ":5432/")
        ; These are the credentials jepsen.postgres provisions by default
        "spring.datasource.username" "postgres"
@@ -70,7 +70,7 @@
 
        ; Redis
        "conductor.redis.hosts" (->> (:roles test)
-                                    :queue
+                                    :redis
                                     (mapv (fn [node]
                                             ; We'll pretend each node is in its
                                             ; own rack

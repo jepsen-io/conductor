@@ -17,8 +17,8 @@
   Workers."
   [opts]
   (role/db
-    {:db         (postgres/db {})
-     :queue      (redis/db)
+    {:postgres   (postgres/db {})
+     :redis      (redis/db {})
      :server     (server/db)
      :std-worker (std-worker/db)
      :worker     (worker/db)}))
