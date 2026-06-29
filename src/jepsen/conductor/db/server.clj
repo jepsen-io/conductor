@@ -9,7 +9,8 @@
                     [db :as db]
                     [fs-cache :as fs-cache]
                     [random :as rand]
-                    [role :as role]]
+                    [role :as role]
+                    [util :refer [meh]]]
             [jepsen.conductor.base :refer :all]
             [jepsen.control [net :as cn]
                             [util :as cu]]
@@ -74,17 +75,21 @@
                                     (mapv (fn [node]
                                             ; We'll pretend each node is in its
                                             ; own rack
-                                            (str node ":6379:" node)))
+                                            (str node ":6379:" node ":pw")))
                                     (str/join ","))
-       ; TODO: maybe later if we do cluster?
-       ;"conductor.redis.clustername" "jepsen"
-       "conductor.redis.workflowNamespacePrefix" "conductor"
-       "conductor.redis.queueNamespacePrefix"    "conductor_queues"
-       "conductor.redis.queuesNonQuorumPort"     6379
+       "conductor.redis.username" "jepsen"
+       "conductor.redis.password" "jepsen"
+       "conductor.redis.workflowNamespacePrefix"  "conductor"
+       "conductor.redis.queueNamespacePrefix"     "conductor_queues"
+       "conductor.redis.queuesNonQuorumPort"      6379
 
        ; We're supposed to use Redis as the "primary store + queues"
-       "conductor.db.type"    "redis_standalone"
-       "conductor.queue.type" "redis_standalone"
+       "conductor.db.type"    (case (:redis-type test)
+                                :single "redis_standalone"
+                                :cluster "redis_cluster")
+       "conductor.queue.type" (case (:redis-type test)
+                                :single "redis_standalone"
+                                :cluster "redis_cluster")
 
        ; And the archive/index store is Postgres
        "conductor.archive.db.enabled" true
@@ -154,7 +159,7 @@
     ; when not connected to a pty
     (c/su
       (let [plain-file (str log-file ".plain")]
-        (c/exec :ansifilter :--max-size "16G" :-p :-i log-file :-o plain-file)
+        (meh (c/exec :ansifilter :--max-size "16G" :-p :-i log-file :-o plain-file))
         {plain-file       "server.log"
          properties-file  "server.properties"})))
 
@@ -183,5 +188,5 @@
 
 (defn db
   "Constructs a server DB."
-  []
-  (DB.))
+  [opts]
+  (map->DB {}))

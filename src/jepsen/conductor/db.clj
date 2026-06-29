@@ -3,6 +3,7 @@
   (:require [clojure.tools.logging :refer [info warn]]
             [clj-commons.slingshot :refer [try+ throw+]]
             [jepsen [control :as c]
+                    [db :as db]
                     [role :as role]]
             [jepsen.control.util :as cu]
             [jepsen.conductor.db [server :as server]
@@ -10,7 +11,7 @@
                                  [worker :as worker]]
             [jepsen.os.debian :as debian]
             [jepsen.postgres.db :as postgres]
-            [jepsen.redis.db.single :as redis]))
+            [jepsen.redis.cli :as redis]))
 
 (defn db
   "Constructs a multi-role DB for our combined Postgres, Redis, Conductor, and
@@ -18,7 +19,9 @@
   [opts]
   (role/db
     {:postgres   (postgres/db {})
-     :redis      (redis/db {})
-     :server     (server/db)
+     :redis      ((get redis/db-types (:redis-type opts)) {})
+     :server     {:db (server/db {})
+                  :deps [:postgres :redis]}
+     ; These do depend on the server, but they'll do their own coordination.
      :std-worker (std-worker/db)
      :worker     (worker/db)}))

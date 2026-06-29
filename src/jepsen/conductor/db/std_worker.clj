@@ -10,7 +10,7 @@
                     [db :as db]
                     [fs-cache :as fs-cache]
                     [role :as role]
-                    [util :as util]]
+                    [util :as util :refer [meh]]]
             [jepsen.conductor.base :refer :all]
             [jepsen.control [net :as cn]
                             [util :as cu]]
@@ -92,6 +92,7 @@
             r))
         {:log-message (str "Waiting for server API (" url
                            ") before starting")
+         :timeout 300000
          :log-interval 10000}))
     (db/start! this test node))
 
@@ -108,7 +109,7 @@
       ; We have to strip out all the ANSI color escapes if we ever want a hope
       ; of reading these files
       (let [plain-file (str log-file ".plain")]
-        (c/exec :ansifilter :--max-size "16G" :-p :-i log-file :-o plain-file)
+        (meh (c/exec :ansifilter :--max-size "16G" :-p :-i log-file :-o plain-file))
         {plain-file "std-worker.log"
          properties-file "std-worker.properties"})))
 

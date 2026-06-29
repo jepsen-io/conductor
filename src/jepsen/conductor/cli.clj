@@ -128,18 +128,22 @@
 
 (defn roles
   "The Jepsen role map, given CLI options."
-  [{:keys [nodes]}]
+  [{:keys [nodes redis-type]}]
   (let [n     (count nodes)
         pg    1
-        redis 1
+        redis (case redis-type
+                :single 1
+                ; The only database I have ever seen that needs a minimum of
+                ; six nodes and *still* loses your data by design
+                :cluster 6)
         ; Divide the remaining nodes equally
         m          (- n pg redis)
         _          (when-not (<= 3 m)
                      (throw+ {:type ::not-enough-nodes
                               :have (count nodes)
                               :need (+ pg redis 3)}))
-        server     (math/round (* 1/3 m))
-        std-worker (math/round (* 2/3 m))
+        server     (math/floor (* 1/3 m))
+        std-worker (math/floor (* 1/3 m))
         worker     (- m server std-worker)]
       (zipmap [:postgres :redis :server :std-worker :worker]
               (cut-vec nodes [pg redis server std-worker worker]))))
@@ -266,6 +270,11 @@
       :default 60
       :parse-fn parse-long
       :validate [(complement neg?) "Must not be negative"]]
+
+     [nil "--redis-type TYPE" "Either `single` for a single node, or `cluster` for Redis Cluster."
+      :default :single
+      :parse-fn keyword
+      :validate [#{:single :cluster} "Must be either `single` or `cluster`."]]
 
      [nil "--time-limit SECONDS"
       "Excluding setup and teardown, how long should a test run for, in seconds?"
