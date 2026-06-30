@@ -190,6 +190,7 @@
               ; Recover
               (gen/log "Recovering")
               (gen/nemesis (:final-generator nemesis))
+              ; While it's recovering...
               (->> (:recovery-generator workload)
                    (gen/stagger (/ (:recovery-rate opts)))
                    (gen/clients)

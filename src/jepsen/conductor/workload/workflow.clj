@@ -280,6 +280,10 @@
   []
   (FinalCheckGen.))
 
+(def queue-size-gen
+  "Checks the queue size, once per second."
+  (gen/delay 1 (gen/repeat {:f :queue-size})))
+
 (defn gen
   "Generator of operations, given CLI opts."
   [{:keys [rate]}]
@@ -288,7 +292,7 @@
          (gen/stagger (/ 2 rate) (backpressure-gen (start-workflow-gen)))
          ; We want a steady stream of queue-size requests to inform the
          ; backpressure system of what's going on
-         (gen/delay 1 (gen/repeat {:f :queue-size}))
+         queue-size-gen
          ; Occasionally check on a workflow we think is completed, just in case
          ; it vanishes
          (gen/stagger (/ 32 rate)
@@ -296,6 +300,26 @@
          ; Otherwise, try to clear out a pending workflow
          (check-workflow-gen :pending))
        (gen/stagger (/ rate))))
+
+(defrecord UntilDrainedGen [gen]
+  gen/Generator
+  (op [this test ctx]
+    (when-let [[op gen'] (gen/op gen test ctx)]
+      [op (UntilDrainedGen. gen')]))
+
+  (update [this test ctx op]
+    (if (and (h/ok? op)
+             (identical? :queue-size (:f op))
+             (zero? (:value op)))
+      ; Done!
+      nil
+      ; Propagate
+      (UntilDrainedGen. (gen/update gen test ctx op)))))
+
+(defn until-drained-gen
+  "Waits for the queue-size to drain to zero, then terminates."
+  [gen]
+  (UntilDrainedGen. gen))
 
 ;; Checkers
 
@@ -418,9 +442,16 @@
 (defn workload
   "Constructs a workflow workload given CLI options."
   [opts]
-  {:client          (role/restrict-client :server (map->Client {}))
-   :checker         (completion-checker)
-   :wrap-generator  track-workflow-gen
-   :generator       (gen opts)
-   :recovery-generator (check-workflow-gen :pending)
-   :final-generator    (final-check-gen)})
+  {:client              (role/restrict-client :server (map->Client {}))
+   :checker             (completion-checker)
+   :wrap-generator      track-workflow-gen
+   :generator           (gen opts)
+   :recovery-generator  (until-drained-gen
+                          (gen/any
+                            queue-size-gen
+                            (check-workflow-gen :pending)))
+   :final-generator     [(gen/any
+                           (until-drained-gen queue-size-gen)
+                           (final-check-gen))
+                         ; One final peek
+                         (gen/limit 1 queue-size-gen)]})

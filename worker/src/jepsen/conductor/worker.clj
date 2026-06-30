@@ -21,7 +21,11 @@
           res  (TaskResult. task)]
       (.setStatus res TaskResult$Status/COMPLETED)
       (.addOutputData res "greeting" (str "hello, " name))
-      res)))
+      res))
+
+  (getPollingInterval [_]
+    ; Poll every 100 ms
+    100))
 
 (defn api-client
   "Opens a new Conductor API client."
@@ -45,9 +49,9 @@
                   ; There's also withTaskToThreadCount and withTaskThreadCount,
                   ; but I can't tell what they actually do just yet
 
-                  ; What are the units of this timeout? What does this setting
-                  ; do?
-                  ; (withTaskPollTimeout ???)
+                  ; This is in millis, and controls the time the worker will
+                  ; block awaiting a queue item.
+                  ;(withTaskPollTimeout ???)
                   (build))]
       (.init trc))
     (catch Throwable t
