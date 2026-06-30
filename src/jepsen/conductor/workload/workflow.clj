@@ -20,6 +20,7 @@
     (let [api-client (c/api-client test node)]
       (assoc this
              :api-client        api-client
+             :task-client       (c/task-client api-client)
              :workflow-executor (c/workflow-executor api-client)
              :workflow-client   (c/workflow-client api-client))))
 
@@ -45,7 +46,14 @@
         :check-workflow
         (assoc op
                :type :ok
-               :value (c/get-workflow workflow-client (:value op))))))
+               :value (c/get-workflow workflow-client (:value op)))
+
+        ; We use _deciderQueue as a proxy for overall system backlog
+        :queue-size
+        (assoc op
+               :type :ok
+               :value (c/get-queue-size-for-task task-client
+                                                 "_deciderQueue")))))
 
   (teardown! [this test])
 
@@ -100,9 +108,17 @@
               (TrackWorkflowGen. gen' completed' pending'))))
 
         ; We don't care about this f
-        this)
+        (TrackWorkflowGen. (gen/update gen test (assoc ctx
+                                                       :completed completed
+                                                       :pending pending)
+                                       event)
+                           completed pending))
       ; Not an OK op
-      this)))
+      (TrackWorkflowGen. (gen/update gen test (assoc ctx
+                                                     :completed completed
+                                                     :pending pending)
+                                     event)
+                         completed pending))))
 
 (defn track-workflow-gen
   "Wraps a generator in one which keeps track of the completed and pending
@@ -110,6 +126,7 @@
   :completed and :pending keys in the context."
   [gen]
   (TrackWorkflowGen. gen bs/empty bs/empty))
+
 
 (defn start-workflow-gen
   "Generates a series of start-workflow operations"
@@ -119,6 +136,106 @@
      :value {:name "greetings"
              :version 1
              :input {"name" (str "jepsen " i)}}}))
+
+(defn backpressure-interval
+  "Computes a new backpressure interval in nanos given the queue size, rate
+  of change of that size in 1 / ns, and current interval."
+  [size size-rate interval]
+  (let [nanos       1000000000
+        ; We want a queue of around 100 elements
+        target-size 100
+        ; To get there in 10 seconds, we need a size-rate of...
+        target-rate (/ (- target-size size) 10000000000)
+        ; The current rate that we're adding elements to the queue
+        add-rate (/ interval)
+        ; size-rate = add-rate + drain-rate, so the (negative) drain rate is
+        drain-rate (- size-rate add-rate)
+        ; So to achieve our target rate, we need a *new* add rate.
+        ; target-rate = add-rate' + drain-rate
+        add-rate' (- target-rate drain-rate)
+        ;_ (prn :size-rate size-rate)
+        ;_ (prn :target-rate target-rate)
+        ;_ (prn :add-rate add-rate :drain-rate drain-rate)
+        ;_ (prn :add-rate' add-rate')
+        ; But let's place some bounds on our add rate
+        add-rate' (-> add-rate'
+                      ; At least one per second
+                      (max (/ 1 nanos))
+                      ; And at most 10K/sec
+                      (min (/ 10000 nanos)))
+        ;_ (prn :clamped-add-rate' add-rate')
+        ; Which is an interval of
+        interval' (/ add-rate')
+        ; Which we blend with the existing interval to smooth out fluctuations
+        interval' (+ (* 1/8 interval)
+                     (* 7/8 interval'))]
+    (long interval')))
+
+(defrecord BackpressureGen [; Inner generator
+                            gen
+                            ; Next time we can release an op
+                            ^long next-time
+                            ; Approximate interval between ops
+                            ^long interval
+                            ; Our last {:time :depth} measurement.
+                            last-measurement]
+  ; This is straight from gen/stagger
+  gen/Generator
+  (op [this test ctx]
+    (when-let [[op gen'] (gen/op gen test ctx)]
+      (let [now       (:time ctx)
+            next-time (if (= -1 next-time)
+                        now
+                        next-time)]
+        (cond ; Pending passes through
+              (identical? :pending op)
+              [op this]
+
+              ; We're ready
+              (<= next-time (:time op))
+              [op (BackpressureGen.
+                    gen'
+                    (+ (:time op) (rand/long (* 2 interval)))
+                    interval
+                    last-measurement)]
+
+              ; Waiting
+              true
+              [(assoc op :time next-time)
+                (BackpressureGen.
+                  gen'
+                  (+ next-time (rand/long (* 2 interval)))
+                  interval
+                  last-measurement)]))))
+
+  ; When we get an :ok :queue-size, we need to update our state.
+  (update [this test ctx op]
+    (if (and (h/ok? op)
+             (identical? :queue-size (:f op)))
+      (let [measurement' {:time (:time op)
+                          :size (:value op)}
+            ; Current rate of change of the queue, in 1 / ns
+            rate (/ (- (:size measurement')
+                       (:size last-measurement))
+                    (- (:time measurement')
+                       (:time last-measurement)))
+            interval' (backpressure-interval (:size measurement')
+                                             rate
+                                             interval)]
+        (info "Queue size" (:value op) "so new rate is" (float (/ 1e9 interval')))
+        (BackpressureGen. (gen/update gen test ctx op)
+                          next-time
+                          interval'
+                          measurement'))
+      ; Something else
+      (BackpressureGen. (gen/update gen test ctx op)
+                        next-time interval last-measurement))))
+
+(defn backpressure-gen
+  "Applies backpressure to a wrapped generator based on :queue-size
+  operations."
+  [gen]
+  (BackpressureGen. gen -1 10 {:time 0, :size 0}))
 
 (defrecord CheckGen [ctx-key]
   gen/Generator
@@ -162,6 +279,23 @@
   "Emits one check-workflow op for each known workflow."
   []
   (FinalCheckGen.))
+
+(defn gen
+  "Generator of operations, given CLI opts."
+  [{:keys [rate]}]
+  (->> (gen/any
+         ; Up to half of our requests can be starting a new workflow run
+         (gen/stagger (/ 2 rate) (backpressure-gen (start-workflow-gen)))
+         ; We want a steady stream of queue-size requests to inform the
+         ; backpressure system of what's going on
+         (gen/delay 1 (gen/repeat {:f :queue-size}))
+         ; Occasionally check on a workflow we think is completed, just in case
+         ; it vanishes
+         (gen/stagger (/ 32 rate)
+                      (check-workflow-gen :completed))
+         ; Otherwise, try to clear out a pending workflow
+         (check-workflow-gen :pending))
+       (gen/stagger (/ rate))))
 
 ;; Checkers
 
@@ -287,11 +421,6 @@
   {:client          (role/restrict-client :server (map->Client {}))
    :checker         (completion-checker)
    :wrap-generator  track-workflow-gen
-   :generator           (gen/any
-                          (gen/stagger (/ 2 (:rate opts))
-                                       (start-workflow-gen))
-                          (gen/stagger (/ 32 (:rate opts))
-                                       (check-workflow-gen :completed))
-                          (check-workflow-gen :pending))
+   :generator       (gen opts)
    :recovery-generator (check-workflow-gen :pending)
    :final-generator    (final-check-gen)})

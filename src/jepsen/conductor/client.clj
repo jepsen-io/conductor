@@ -10,6 +10,7 @@
            (com.netflix.conductor.client.exception ConductorClientException)
            (com.netflix.conductor.client.http TaskClient
                                               WorkflowClient)
+           (com.netflix.conductor.common.metadata.tasks PollData)
            (com.netflix.conductor.common.metadata.workflow StartWorkflowRequest)
            (com.netflix.conductor.common.run Workflow
                                              Workflow$WorkflowStatus)
@@ -149,6 +150,16 @@
            {:id     workflow-id
             :status :not-found}
            (throw e)))))
+
+(defn get-all-poll-data
+  "Gets the last poll data for all task types."
+  [^TaskClient task-client]
+  (datafy (.getAllPollData task-client)))
+
+(defn get-queue-size-for-task
+  "Fetches the size of the given queue."
+  [^TaskClient task-client ^String task-type]
+  (.getQueueSizeForTask task-client task-type))
 
 ;; Error handling
 

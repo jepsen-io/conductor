@@ -28,4 +28,5 @@
   :jvm-opts ["-Djava.awt.headless=true"
              "-Djava.net.preferIPv4Stack=true"
              "-server"]
-  :profiles {:uberjar {:aot :all}})
+  :profiles {:uberjar {:aot :all}
+             :dev {:dependencies [[criterium "0.4.6"]]}})
