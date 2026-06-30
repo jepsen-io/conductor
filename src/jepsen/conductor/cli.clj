@@ -194,12 +194,12 @@
               (->> (:recovery-generator workload)
                    (gen/stagger (/ (:recovery-rate opts)))
                    (gen/clients)
-                   (gen/time-limit (:recovery-time opts)))
+                   (gen/time-limit (:recovery-time-limit opts)))
               ; Final gen
               (gen/log "Beginning final generator")
               (->> (:final-generator workload)
-                   (gen/time-limit (:final-time-limit opts))
-                   gen/clients))
+                   (gen/clients)
+                   (gen/time-limit (:final-time-limit opts))))
         ; And wrap
         gen (if-let [wrap (:wrap-generator workload)]
               (wrap gen)
@@ -220,8 +220,10 @@
            :nemesis   (:nemesis nemesis jepsen.nemesis/noop)
            :plot      {:nemeses (:perf nemesis)}
            :generator gen
-           ;:logging {:overrides
-           ;          {"..." "FATAL"}}
+           :logging {:overrides
+                     ; The Orkes client will complain about not having a key or
+                     ; secret... often
+                     {"io.orkes.conductor.client.ApiClient" "ERROR"}}
            }))))
 
 (def cli-opts
@@ -275,11 +277,11 @@
       :validate [pos? "Must be a positive number."]]
 
      [nil "--recovery-rate HZ" "How fast should we run operations during the recovery period? We intentionally choose a lower value here to avoid overloading the system during recovery."
-      :default 10
+      :default 100
       :parse-fn read-string
       :validate [pos? "Must be a positive number."]]
 
-     [nil "--recovery-time SECONDS" "How long to wait after the end of fault injection before beginning the final generator."
+     [nil "--recovery-time-limit SECONDS" "How long to wait after the end of fault injection before beginning the final generator."
       :default 60
       :parse-fn parse-long
       :validate [(complement neg?) "Must not be negative"]]
