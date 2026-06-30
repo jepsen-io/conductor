@@ -271,6 +271,11 @@
       :parse-fn parse-long
       :validate [pos? "Must be a positive number."]]
 
+     [nil "--queue-type TYPE" "Conductor's queue.type setting. Either redis or postgres"
+      :default :redis
+      :parse-fn keyword
+      :validate [#{:postgres :redis} "Must be either redis or postgres."]]
+
      ["-r" "--rate HZ" "Approximate request rate, in hz"
       :default  10000
       :parse-fn read-string

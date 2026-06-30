@@ -83,15 +83,16 @@
        "conductor.redis.queueNamespacePrefix"     "conductor_queues"
        "conductor.redis.queuesNonQuorumPort"      6379
 
-       ; We're supposed to use Redis as the "primary store + queues"
        "conductor.db.type"    (case (:db-type test)
                                 :postgres "postgres"
                                 :redis (case (:redis-type test)
                                          :single "redis_standalone"
                                          :cluster "redis_cluster"))
-       "conductor.queue.type" (case (:redis-type test)
-                                :single "redis_standalone"
-                                :cluster "redis_cluster")
+       "conductor.queue.type" (case (:queue-type test)
+                                :postgres "postgres"
+                                :redis (case (:redis-type test)
+                                         :single "redis_standalone"
+                                         :cluster "redis_cluster"))
 
        ; And the archive/index store is Postgres
        "conductor.archive.db.enabled" true
@@ -107,6 +108,8 @@
        ; Distributed lock backed by Redis
        "conductor.app.workflow-execution-lock-enabled" true
        "conductor.workflow-execution-lock.type" "orkes_lock"
+       ; Default lease is 1m, but we want to stress this, so we'll go short
+       "conductor.workflow.lockLeaseTime" "1s"
 
        ; Misc engine settings
        "conductor.secrets.type" "memory"
@@ -125,11 +128,6 @@
 
        ; Not sure what this does; should we lower it?
        ;"conductor.redis.eventExecutionPersistenceTTL" 86400
-
-       ; TODO: definitely want to mess with this
-       ;"conductor.app.lockLeaseTime"                  120000
-       ;"conductor.workflow.execution.maxTimeInMillis" 10000
-       ;"conductor.app.lockTimeToTry"                  10
 
        ; TODO: check on these too
        ;"conductor.postgres.workflowDefCacheRefreshInterval" 60
