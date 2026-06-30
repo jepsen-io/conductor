@@ -41,7 +41,13 @@
           task-client (TaskClient. api-client)
           trc (.. (TaskRunnerConfigurer$Builder. task-client
                                                  [(AnWorker.)])
-                  (withThreadCount 10)
+                  (withThreadCount 128)
+                  ; There's also withTaskToThreadCount and withTaskThreadCount,
+                  ; but I can't tell what they actually do just yet
+
+                  ; What are the units of this timeout? What does this setting
+                  ; do?
+                  ; (withTaskPollTimeout ???)
                   (build))]
       (.init trc))
     (catch Throwable t
