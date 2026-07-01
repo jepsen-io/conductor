@@ -206,6 +206,9 @@
               (assoc ~op :type :fail, :error :failed-to-connect)
 
               #"^Internal Server Error"
-              (assoc ~op :type :info :error :internal-server-error)
+              (assoc ~op :type :info, :error :internal-server-error)
+
+              #"timeout"
+              (assoc ~op :type :info, :error :timeout)
 
               (throw e#))))))
