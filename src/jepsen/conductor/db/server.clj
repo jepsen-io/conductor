@@ -40,6 +40,24 @@
   "Where do we stash the version string?"
   (str dir "/version"))
 
+(defn parse-version
+  "This is a hot mess; we're testing something
+  that doesn't really have publicly available versions, so we use paths which
+  should hopefully have something vaguely 1.2.3 shaped in them.
+
+  Takes a string like foo/bar/foo-1.2.3 and returns a vector [1 2 3]"
+  [s]
+  (if-let [[_ a b c] (re-find #"(\d+)\.(\d+)\.(\d+)" s)]
+    [a b c]
+    (throw+ {:type :unexpected-version-string
+             :expected "A string with a version number in it, like foo/bar/baz-1.2.3"
+             :actual s})))
+
+(defn version<=
+  "Compares two version strings."
+  [a b]
+  (not (pos? (compare (parse-version a) (parse-version b)))))
+
 (defn install!
   "Installs the server."
   [test node]
@@ -59,7 +77,7 @@
   "Writes out the properties file."
   [test node]
   (c/su
-    (write-properties!
+      (cond->
       {; Postgres
        "spring.datasource.url" (str "jdbc:postgresql://"
                                     (-> test :roles :postgres rand/nth)
@@ -81,7 +99,6 @@
        "conductor.redis.password"                 "pw"
        "conductor.redis.workflowNamespacePrefix"  "conductor"
        "conductor.redis.queueNamespacePrefix"     "conductor_queues"
-       "conductor.redis.queuesNonQuorumPort"      6379
 
        "conductor.db.type"    (case (:db-type test)
                                 :postgres "postgres"
@@ -95,15 +112,17 @@
                                          :cluster "redis_cluster"))
 
        ; And the archive/index store is Postgres
-       "conductor.archive.db.enabled" true
        "conductor.archive.db.type" "postgres"
        "conductor.archive.db.document.store.type" "postgres"
 
-       ; Don't do async indexing of executions into Postgres
-       "conductor.app.asyncIndexingEnabled" false
-
        ; Disable auth
        "conductor.security.enabled" "false"
+
+       ; Indexing
+       "conductor.archive.db.indexer.enabled"
+       (case (:db-type test)
+         :postgres false
+         :redis true)
 
        ; Distributed lock backed by Redis
        "conductor.app.workflow-execution-lock-enabled" true
@@ -137,7 +156,14 @@
        ;"conductor.workflow.indexing.indexOffTimeInSec"      2
        ;"conductor.archive.db.indexer.indexOffTimeInSec"     2
        }
-      properties-file)))
+
+      ; There is, we think, some kind of liveness or data-loss bug that occurs
+      ; when you kill Redis with a Postgres main DB. Version 5.4.0 fixes this
+      ; by adding this option.
+      (and (= :postgres (:db-type test))
+           (version<= "5.4.0" (:version test)))
+      (assoc "conductor.queue.decider-queue.type" "postgres")
+      true (write-properties! properties-file))))
 
 (defrecord DB []
   db/DB
