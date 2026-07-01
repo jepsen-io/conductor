@@ -93,31 +93,37 @@
       :ref-name   The reference name for the task.
       :input      A map of input name (e.g. \"prey\") to expression (e.g.
                   \"${rabbit.output.location}\").
+      :poll-timeout The poll timeout, in seconds.
+      :timeout    The task timeout, in seconds. I'm not sure what this is.
+      :total-timeout The, uh... total timeout? In seconds.
       :response-timeout How long before we consider this task timed out, in
-                        seconds."
-  [{:keys [type name ref-name input] :as task}]
+                        seconds.
+      :retry-count  The number of allowable retries
+      :retry-delay  How long to wait befor retrying, in seconds"
+  [{:keys [type input poll-timeout name ref-name response-timeout retry-count
+           retry-delay timeout total-timeout] :as task
+    :or {; The default timeout, one hour, is far longer than we're willing to
+         ; wait during most tests.
+         response-timeout     10
+         ; We're trying to figure out if Conductor will ensure work happens,
+         ; so it doesn't make any sense for it to give up on a task.
+         retry-count          Integer/MAX_VALUE
+         retry-delay          5}}]
   (case type
     :simple (let [t (SimpleTask. name ref-name)]
               (doseq [[name expr] input]
                 (.input t ^String name expr))
-              (when-let [timeout (:response-timeout task)]
-                (let [^TaskDef td (.getTaskDef t)
-                      td' (TaskDef. (.getName t)
-                                    (.getDescription t)
-                                    ; For some reason you can ask for the name
-                                    ; and description but *not* the retry
-                                    ; count? Also this library seems almost
-                                    ; totally undocumented, so... maybe there's
-                                    ; a better way to do this? Hopefully 0
-                                    ; means "retry forever".
-                                    0
-                                    ; It would be nice if we could also set the
-                                    ; retrydelayseconds here, but it's private
-                                    ; and has no obvious accessor or
-                                    ; constructor form? I don't understand
-                                    ; what's going on here.
-                                    timeout)]
-                  (.setTaskDef t td)))
+              (.setTaskDef
+                t
+                (cond-> (TaskDef/builder)
+                  true             (.name name)
+                  poll-timeout     (.pollTimeoutSeconds poll-timeout)
+                  response-timeout (.responseTimeoutSeconds response-timeout)
+                  retry-count      (.retryCount retry-count)
+                  retry-delay      (.retryDelaySeconds retry-delay)
+                  timeout          (.timeoutSeconds timeout)
+                  total-timeout    (.totalTimeoutSeconds total-timeout)
+                  true             (.build)))
               t)))
 
 (defn ^ConductorWorkflow workflow

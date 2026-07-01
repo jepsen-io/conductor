@@ -29,11 +29,10 @@
       workflow-executor
       {:name "greetings"
        :version 1
-       :tasks [{:type :simple
-                :name "greet"
+       :tasks [{:type     :simple
+                :name     "greet"
                 :ref-name "greet_ref"
-                :input {"name" "${workflow.input.name}"}
-                :response-timeout 10}]}))
+                :input    {"name" "${workflow.input.name}"}}]}))
 
   (invoke! [this test op]
     (c/with-errors op
