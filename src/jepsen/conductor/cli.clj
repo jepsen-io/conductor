@@ -296,6 +296,11 @@
       :parse-fn keyword
       :validate [#{:single :cluster} "Must be either `single` or `cluster`."]]
 
+     [nil "--response-timeout-seconds" "How long before Conductor considers one of our tasks timed out, and can retry it? You probably want this to be shorter than the recovery period, so that Conductor has a chance to detect and re-schedule tasks that got stuck during the test run."
+      :default 30
+      :parse-fn parse-long
+      :validate [pos? "Must be positive"]]
+
      [nil "--time-limit SECONDS"
       "Excluding setup and teardown, how long should a test run for, in seconds?"
       :default  300

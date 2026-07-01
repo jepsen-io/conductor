@@ -10,7 +10,8 @@
            (com.netflix.conductor.client.exception ConductorClientException)
            (com.netflix.conductor.client.http TaskClient
                                               WorkflowClient)
-           (com.netflix.conductor.common.metadata.tasks PollData)
+           (com.netflix.conductor.common.metadata.tasks PollData
+                                                        TaskDef)
            (com.netflix.conductor.common.metadata.workflow StartWorkflowRequest)
            (com.netflix.conductor.common.run Workflow
                                              Workflow$WorkflowStatus)
@@ -91,15 +92,35 @@
       :name       The short name for the task.
       :ref-name   The reference name for the task.
       :input      A map of input name (e.g. \"prey\") to expression (e.g.
-                  \"${rabbit.output.location}\")."
-  [{:keys [type name ref-name input]}]
+                  \"${rabbit.output.location}\").
+      :response-timeout How long before we consider this task timed out, in
+                        seconds."
+  [{:keys [type name ref-name input] :as task}]
   (case type
     :simple (let [t (SimpleTask. name ref-name)]
               (doseq [[name expr] input]
-                (.input t name expr))
+                (.input t ^String name expr))
+              (when-let [timeout (:response-timeout task)]
+                (let [^TaskDef td (.getTaskDef t)
+                      td' (TaskDef. (.getName t)
+                                    (.getDescription t)
+                                    ; For some reason you can ask for the name
+                                    ; and description but *not* the retry
+                                    ; count? Also this library seems almost
+                                    ; totally undocumented, so... maybe there's
+                                    ; a better way to do this? Hopefully 0
+                                    ; means "retry forever".
+                                    0
+                                    ; It would be nice if we could also set the
+                                    ; retrydelayseconds here, but it's private
+                                    ; and has no obvious accessor or
+                                    ; constructor form? I don't understand
+                                    ; what's going on here.
+                                    timeout)]
+                  (.setTaskDef t td)))
               t)))
 
-(defn workflow
+(defn ^ConductorWorkflow workflow
   "Takes a Clojure structure representing a workflow and returns a
   ConductorWorkflow from it. The workflow should be a map with the following
   keys:

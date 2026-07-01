@@ -32,7 +32,8 @@
        :tasks [{:type :simple
                 :name "greet"
                 :ref-name "greet_ref"
-                :input {"name" "${workflow.input.name}"}}]}))
+                :input {"name" "${workflow.input.name}"}
+                :response-timeout 10}]}))
 
   (invoke! [this test op]
     (c/with-errors op
