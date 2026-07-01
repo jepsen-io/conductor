@@ -61,7 +61,11 @@
   (close! [this test]
           (c/close! workflow-executor)
           (c/close! workflow-client)
-          (c/close! api-client)))
+          (c/close! api-client))
+
+  client/Reusable
+  (reusable? [this test]
+    true))
 
 
 ;; Generators
