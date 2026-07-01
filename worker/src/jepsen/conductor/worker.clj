@@ -24,7 +24,7 @@
           res  (TaskResult. task)]
       (.setStatus res TaskResult$Status/COMPLETED)
       (.addOutputData res "greeting" (str "hello, " name))
-      (info (str "Complete task (ref " (.getReferenceTask task)
+      (info (str "Complete task (ref " (.getReferenceTaskName task)
                  ", task id " (.getTaskId task) ")"))
       res))
 
