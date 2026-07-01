@@ -32,10 +32,11 @@
         workflow-executor
         {:name "greetings"
          :version 1
-         :tasks [{:type     :simple
-                  :name     "greet"
-                  :ref-name "greet_ref"
-                  :input    {"name" "${workflow.input.name}"}}]})
+         :tasks [{:input            {"name" "${workflow.input.name}"}
+                  :name             "greet"
+                  :response-timeout (:response-timeout test)
+                  :ref-name         "greet_ref"
+                  :type             :simple}]})
       (catch ConductorClientException e
         ; We often get BACKEND_ERROR here, so we need to retry
         (info "Setup failed due to" (.getMessage e) "- retrying")
