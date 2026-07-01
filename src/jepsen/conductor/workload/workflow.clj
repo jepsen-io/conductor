@@ -292,8 +292,11 @@
   "Generator of operations, given CLI opts."
   [{:keys [rate]}]
   (->> (gen/any
-         ; Up to half of our requests can be starting a new workflow run
-         (gen/stagger (/ 2 rate) (backpressure-gen (start-workflow-gen)))
+         ; Up to one third of our requests can be starting a new workflow run.
+         ; We want to make sure that the check-workflow requests can be
+         ; *higher* than this, so they don't fall behind on the workflow
+         ; backlog.
+         (gen/stagger (/ 3 rate) (backpressure-gen (start-workflow-gen)))
          ; We want a steady stream of queue-size requests to inform the
          ; backpressure system of what's going on
          queue-size-gen
