@@ -199,8 +199,8 @@
           (let [m# (.getMessage e#)]
             (condp re-find m#
               ; Huh.
-              #"BACKEND_ERROR - null"
-              (assoc ~op :type :info, :error [:backend-error-null m#])
+              #"BACKEND_ERROR"
+              (assoc ~op :type :info, :error [:backend-error m#])
 
               #"^Failed to connect to"
               (assoc ~op :type :fail, :error :failed-to-connect)

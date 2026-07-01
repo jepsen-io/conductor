@@ -5,6 +5,7 @@
                           [set :as bs]]
             [clojure.tools.logging :refer [info warn]]
             [clojure [pprint :refer [pprint]]]
+            [dom-top.core :refer [with-retry]]
             [jepsen [checker :as checker]
                     [client :as client]
                     [generator :as gen]
@@ -12,7 +13,8 @@
                     [random :as rand]
                     [role :as role]]
             [jepsen.conductor.client :as c]
-            [tesser.core :as t]))
+            [tesser.core :as t])
+  (:import (com.netflix.conductor.client.exception ConductorClientException)))
 
 (defrecord Client [api-client task-client workflow-client workflow-executor]
   client/Client
@@ -25,14 +27,22 @@
              :workflow-client   (c/workflow-client api-client))))
 
   (setup! [this test]
-    (c/register-workflow!
-      workflow-executor
-      {:name "greetings"
-       :version 1
-       :tasks [{:type     :simple
-                :name     "greet"
-                :ref-name "greet_ref"
-                :input    {"name" "${workflow.input.name}"}}]}))
+    (with-retry [tries 10]
+      (c/register-workflow!
+        workflow-executor
+        {:name "greetings"
+         :version 1
+         :tasks [{:type     :simple
+                  :name     "greet"
+                  :ref-name "greet_ref"
+                  :input    {"name" "${workflow.input.name}"}}]})
+      (catch ConductorClientException e
+        ; We often get BACKEND_ERROR here, so we need to retry
+        (info "Setup failed due to" (.getMessage e) "- retrying")
+        (when (zero? tries)
+          (throw e))
+        (Thread/sleep 2000)
+        (retry (dec tries)))))
 
   (invoke! [this test op]
     (c/with-errors op
