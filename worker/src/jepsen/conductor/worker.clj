@@ -17,11 +17,19 @@
     "greet")
 
   (execute [_ task]
+    (info (str "Begin task (ref " (.getReferenceTaskName task)
+               ", task id " (.getTaskId task) ")"))
+
     (let [name (.. task getInputData (get "name"))
           res  (TaskResult. task)]
       (.setStatus res TaskResult$Status/COMPLETED)
       (.addOutputData res "greeting" (str "hello, " name))
+      (info (str "Complete task (ref " (.getReferenceTask t) ", task id " (.getTaskId t) ")"))
       res))
+
+  (onErrorUpdate [_ task]
+    (warn "onErrorUpdate task (ref " (.getReferenceTaskName task)
+          ", task id " (.getTaskId task) ")"))
 
   (getPollingInterval [_]
     ; Poll every 100 ms
