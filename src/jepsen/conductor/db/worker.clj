@@ -124,7 +124,7 @@
             jar-file)))
 
   (kill! [this test node]
-     (c/su (cu/stop-daemon! pid-file)))
+     (c/su (cu/stop-daemon! "java" pid-file)))
 
   db/Pause
   (pause! [this test node]
