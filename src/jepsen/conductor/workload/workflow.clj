@@ -425,31 +425,55 @@
   [history]
   (let [fold
         (loopf {:name "task-never-started"}
-               ; Reducer
-               ([workflows (b/linear bs/empty)]
+               ; Reducer: build up a set of workflows that haven't been
+               ; executed yet. Note that a workflow could execute *before* it's
+               ; acknowledged, so we have to keep track of two bounds here.
+               ([; A set of started but un-executed workflows
+                 unexecuted (b/linear bs/empty)
+                 ; A set of executed but unstarted workflows
+                 unstarted (b/linear bs/empty)]
                 [op]
-                (recur (case (:f op)
-                         :start-workflow
-                         (if (= :ok (:type op))
-                           (bs/add workflows (:value op))
-                           workflows)
+                (case (:f op)
+                  ; Fresh workflow
+                  :start-workflow
+                  (if (= :ok (:type op))
+                    (let [id (:value op)]
+                      (if (bs/contains? unstarted id)
+                        ; We just learned of the acknowledgement of a
+                        ; workflow we know is already executing.
+                        (recur (bs/remove unexecuted id)
+                               (bs/remove unstarted id))
+                        ; This is a fresh workflow
+                        (recur (bs/add unexecuted id)
+                               unstarted)))
+                    (recur unexecuted unstarted))
 
-                         :execute (if (h/invoke? op)
-                                    (bs/remove workflows
-                                               (:workflow-instance-id
-                                                 (:value op)))
-                                    workflows)
+                  :execute (if (h/invoke? op)
+                             (let [id (:workflow-instance-id (:value op))]
+                               (if (bs/contains? unexecuted id)
+                                 ; Executing a started workflow
+                                 (recur (bs/remove unexecuted id)
+                                        (bs/remove unstarted id))
+                                 ; Executing a workflow we haven't learned about
+                                 (recur unexecuted
+                                        (bs/add unstarted id))))
+                             (recur unexecuted unstarted))
 
-                         workflows))
-                (b/forked workflows))
-               ; Combiner
-               ([workflows bs/empty]
-                [workflows']
-                (recur (bs/union workflows workflows'))
-                (mapv (fn [workflow]
-                        {:type :task-never-started
-                         :workflow-id workflow})
-                      workflows)))]
+                  (recur unexecuted unstarted))
+                [(b/forked unexecuted)
+                 (b/forked unstarted)])
+               ; Combiner: union all the unexecuted and unstarted sets, and
+               ; take the difference.
+               ([unexecuted (b/linear bs/empty)
+                 unstarted  (b/linear bs/empty)]
+                [[unexecuted' unstarted']]
+                (recur (bs/union unexecuted unexecuted')
+                       (bs/union unstarted unstarted'))
+                ; And subtract
+                (->> (bs/difference unexecuted unstarted)
+                     (mapv (fn [workflow]
+                             {:type :task-never-started
+                              :workflow-id workflow})))))]
   (h/task history task-never-started []
           (h/fold history fold))))
 
