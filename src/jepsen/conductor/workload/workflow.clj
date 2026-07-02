@@ -13,6 +13,7 @@
                     [random :as rand]
                     [role :as role]]
             [jepsen.conductor.client :as c]
+            [jepsen.history.fold :refer [loopf]]
             [tesser.core :as t])
   (:import (com.netflix.conductor.client.exception ConductorClientException)))
 
@@ -399,6 +400,41 @@
                               nil)))
                vec)))
 
+(defn task-never-started-errors
+  "Takes a set of started workflow IDs and a history. Starts a task which
+  returns a vector of error maps for any case when a workflow was started, but
+  no execution was even attempted."
+  [history]
+  (let [fold
+        (loopf {:name "task-never-started"}
+               ; Reducer
+               ([workflows (b/linear bs/empty)]
+                [op]
+                (recur (case (:f op)
+                         :start-workflow
+                         (if (= :ok (:type op))
+                           (bs/add workflows (:value op))
+                           workflows)
+
+                         :execute (if (h/invoke? op)
+                                    (bs/remove workflows
+                                               (:workflow-instance-id
+                                                 (:value op)))
+                                    workflows)
+
+                         workflows))
+                (b/forked workflows))
+               ; Combiner
+               ([workflows bs/empty]
+                [workflows']
+                (recur (bs/union workflows workflows'))
+                (mapv (fn [workflow]
+                        {:type :task-never-started
+                         :workflow-id workflow})
+                      workflows)))]
+  (h/task history task-never-started []
+          (h/fold history fold))))
+
 (def started-workflows-fold
   "A fold which, given OK ops, finds a set of all acked started workflow IDs."
   (->> (t/filter (h/has-f? :start-workflow))
@@ -489,8 +525,9 @@
   checker/Checker
   (check [this test history opts]
     (h/ensure-pair-index history)
-    (let [nil-workflow-id-errors (nil-workflow-id-errors history)
-          concurrent-execution-errors (concurrent-execution-errors history)
+    (let [concurrent-execution-errors (concurrent-execution-errors history)
+          nil-workflow-id-errors      (nil-workflow-id-errors history)
+          task-never-started-errors   (task-never-started-errors history)
           {:keys [started status output]}
           (->> (t/filter h/ok?)
                (t/fuse
@@ -504,7 +541,8 @@
            :diff-output         (diff-output-errors output)
            :incomplete          (incomplete-errors started status)
            :incompatible-status (incompatible-status-errors status)
-           :nil-workflow-id     @nil-workflow-id-errors})
+           :nil-workflow-id     @nil-workflow-id-errors
+           :task-never-started  @task-never-started-errors})
         :started-count (count started)
         :final-status-counts (final-status-counts status)))))
 
@@ -524,7 +562,10 @@
                             expect.
 
       :nil-workflow-id      A create-workflow request returned nil, instead of
-                            an ID string."
+                            an ID string.
+
+      :task-never-started   A workflow was started but no worker was ever asked
+                            to attempt a task for it."
   []
   (CompletionChecker.))
 

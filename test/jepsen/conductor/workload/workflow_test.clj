@@ -1,7 +1,8 @@
 (ns jepsen.conductor.workload.workflow-test
   (:require [clojure [pprint :refer [pprint]]
                      [test :refer :all]]
-            [jepsen [history :as h]]
+            [jepsen [checker :as checker]
+                    [history :as h]]
             [jepsen.conductor.workload.workflow :as w]))
 
 (deftest backpressure-interval-test
@@ -48,3 +49,16 @@
              ; These two ops were concurrently executing the same workflow instance and reference task name
              :ops (mapv h [2 7 8 9])}]
            @(w/concurrent-execution-errors h)))))
+
+(defn check
+  [history]
+  (checker/check (w/completion-checker) {} history {}))
+
+(deftest task-never-started-test
+  (let [h (h/history
+            [{:process 0, :type :invoke, :f :start-workflow}
+             {:process 0, :type :ok, :f :start-workflow, :value "a"}])]
+    (is (= {:count 1
+            :examples [{:type        :task-never-started
+                        :workflow-id "a"}]}
+           (:task-never-started (check h))))))
