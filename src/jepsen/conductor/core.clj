@@ -86,7 +86,6 @@
                       validate-op
                       h/op
                       (assoc :time (util/relative-time-nanos)))]
-        (info "HTTP op" (pr-str op))
         (log-op op)
         (store.format/append-to-big-vector-block!
           history-writer op)))
