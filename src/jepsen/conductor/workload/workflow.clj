@@ -388,7 +388,11 @@
                ; Merge those together
                ([runs bm/empty]
                 [runs']
-                (bm/merge runs runs' into)))]
+                ; Ugh, *another* horrible bug with reduced wrappers. Maybe an
+                ; interaction with loopf?
+                (let [runs  (if (reduced? runs)  @runs runs)
+                      runs' (if (reduced? runs') @runs' runs')]
+                  (bm/merge runs runs' into))))]
     (h/task history concurrent-execution-errors []
             (let [runs (h/fold history fold)
                   ; Sigh; there's some sort of horrible bug lurking in
