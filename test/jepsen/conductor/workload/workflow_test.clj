@@ -22,6 +22,11 @@
     (is (= 109614 (w/backpressure-interval 10000 0 int-10khz)))
     ))
 
+(defn check
+  [history]
+  (checker/check (w/completion-checker) {} history {}))
+
+
 (deftest concurrent-execution-errors-test
   (let [h (h/history
             [{:process 0, :type :invoke, :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}
@@ -45,14 +50,48 @@
              ; Complete
              {:process 1, :type :ok,     :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}])
         ]
-    (is (= [{:type :concurrent-execution
-             ; These two ops were concurrently executing the same workflow instance and reference task name
-             :ops (mapv h [2 7 8 9])}]
-           @(w/concurrent-execution-errors h)))))
+    (is (= {:count 1
+            :examples [{:type :concurrent-execution
+                        ; These two ops were concurrently executing the same workflow instance and reference task name
+                        :ops (mapv h [2 7 8 9])}]}
+           (:concurrent-execution (check h)))))
 
-(defn check
-  [history]
-  (checker/check (w/completion-checker) {} history {}))
+  (prn :-----------------------------------------)
+  (testing "ignores sequential ops"
+    (let [h (h/history
+              [{:index 0,
+                :time 122966562902,
+                :type :invoke,
+                :process :n10.0.105,
+                :f :execute,
+                :value {:reference-task-name "greet_ref",
+                        :workflow-instance-id "3004ec07-7663-11f1-8270-00163e983f22",
+                        :task-id "30053a2a-7663-11f1-8270-00163e983f22"}}
+               {:index 1,
+                :time 122967398856,
+                :type :ok,
+                :process :n10.0.105,
+                :f :execute,
+                :value nil}
+               {:index 2,
+                :time 131344481896,
+                :type :invoke,
+                :process :n8.0.1,
+                :f :execute,
+                :value {:reference-task-name "greet_ref",
+                        :workflow-instance-id "3004ec07-7663-11f1-8270-00163e983f22",
+                        :task-id "41e94115-7663-11f1-8269-00163eb95b8c"}}
+               {:index 3,
+                :time 131345109627,
+                :type :ok,
+                :process :n8.0.1,
+                :f :execute,
+                :value nil}]
+              ; Weird, I think this is a bug in jepsen.history--without dense
+              ; indices, it deadlocks. Have to dig this one out later.
+              {:dense-indices? true})]
+      (is (= nil
+             (:concurrent-execution (check h)))))))
 
 (deftest task-never-started-test
   (let [h (h/history

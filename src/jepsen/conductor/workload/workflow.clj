@@ -2,6 +2,7 @@
   "A workload which creates workflows, asks Conductor to launch instances of
   them, and tries to verify that each execution runs to completion."
   (:require [bifurcan-clj [core :as b]
+                          [map :as bm]
                           [set :as bs]]
             [clojure.tools.logging :refer [info warn]]
             [clojure [pprint :refer [pprint]]]
@@ -365,40 +366,53 @@
   I expect this to fail; it's theoretically impossible to guarantee mutual
   exclusion. But the locks and leaase systems might make it rare!"
   [history]
-  (h/task history concurrent-execution []
-          (h/ensure-pair-index history)
-          (->> (t/filter (fn [op]
-                           (and (identical? :execute (:f op))
-                                ; Only ops with a logged completion
-                                (if (h/invoke? op)
-                                  (h/completion history op)
-                                  true))))
-               (t/group-by (juxt (comp :workflow-instance-id :value)
-                                 (comp :reference-task-name :value)))
-               (t/into [])
-               (h/tesser history)
-               vals
-               ; TODO: we can push this down into the fold itself; I'm just
-               ; feeling lazy. If the profiler says it's slow, will rework.
-               (keep (fn [ops]
-                       (loopr [invoke nil]
-                              [op ops]
-                              (case (:type op)
-                                :invoke
-                                (if invoke
-                                  ; Concurrent!
-                                  {:type :concurrent-execution
-                                   :ops  (sort-by :index
-                                                  [invoke
-                                                   op
-                                                   (h/completion history invoke)
-                                                   (h/completion history op)])}
-                                  (recur op))
-
-                                (:ok, :info, :fail)
-                                (recur nil))
-                              nil)))
-               vec)))
+  (let [fold
+        (loopf {:name "concurrent-execution-errors"}
+               ; Build up a map of [workflow task] -> #{[invoke-idx,
+               ; complete-idx] ...}
+               ([runs (b/linear bm/empty)]
+                [op]
+                (recur
+                  (if (and (h/invoke? op)
+                           (identical? :execute (:f op)))
+                    (if-let [op' (h/completion history op)]
+                      (let [value (:value op)
+                            k [(:workflow-instance-id value)
+                               (:reference-task-name value)]
+                            task-runs (bm/get runs k [])]
+                        (bm/put runs k (conj task-runs [(:index op)
+                                                        (:index op')])))
+                      runs)
+                    runs))
+                (b/linear runs))
+               ; Merge those together
+               ([runs bm/empty]
+                [runs']
+                (bm/merge runs runs' into)))]
+    (h/task history concurrent-execution-errors []
+            (let [runs (h/fold history fold)
+                  ; Sigh; there's some sort of horrible bug lurking in
+                  ; jepsen.history.fold which causes this to come out reduced
+                  ; on the first pass. I should dig in and fix it, but not on
+                  ; the clock for this client--that basement is very deep, and
+                  ; very dark, and very much full of spiders
+                  runs (if (reduced? runs)
+                         @runs
+                         runs)]
+              (->> (bm/values runs)
+                   (keep (fn [intervals]
+                           ; Look for an intersection
+                           (loopr [a  -2
+                                   a' -1]
+                                  [[b b'] (sort intervals)]
+                                  (if (< b a')
+                                    ; Concurrent!
+                                    {:type :concurrent-execution
+                                     :ops  (mapv (partial h/get-index history)
+                                                 (sort [a a' b b']))}
+                                    (recur b b'))
+                                  nil)))
+                   vec)))))
 
 (defn task-never-started-errors
   "Takes a set of started workflow IDs and a history. Starts a task which
