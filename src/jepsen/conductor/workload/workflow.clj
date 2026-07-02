@@ -49,10 +49,12 @@
     (c/with-errors op
       (case (:f op)
         :start-workflow
-        (assoc op
-               :type :ok
-               :value (c/start-workflow! workflow-client
-                                         (:value op)))
+        (let [id (c/start-workflow! workflow-client
+                                    (:value op))]
+          (if (nil? id)
+            ; The client sometimes returns null--I think this is a bug.
+            (assoc op :type :fail, :value nil, :error :nil-workflow-id)
+            (assoc op :type :ok, :value id)))
 
         :check-workflow
         (assoc op
@@ -341,6 +343,19 @@
 
 ;; Checkers
 
+(defn nil-workflow-id-errors
+  "Starts a task which finds a vector of error maps where a create-workflow
+  request returned a nil workflow ID."
+  [history]
+  (h/task history nil-workflow-id []
+          (->> (t/filter (comp #{:nil-workflow-id} :error))
+               (t/map (fn [op']
+                        {:type :nil-workflow-id
+                         :op  (h/invocation history op')
+                         :op' op'}))
+               (t/into [])
+               (h/tesser history))))
+
 (def started-workflows-fold
   "A fold which, given OK ops, finds a set of all acked started workflow IDs."
   (->> (t/filter (h/has-f? :start-workflow))
@@ -430,7 +445,8 @@
 (defrecord CompletionChecker []
   checker/Checker
   (check [this test history opts]
-    (let [{:keys [started status output]}
+    (let [nil-workflow-id-errors (nil-workflow-id-errors history)
+          {:keys [started status output]}
           (->> (t/filter h/ok?)
                (t/fuse
                  {:started started-workflows-fold
@@ -439,15 +455,18 @@
                (h/tesser history))]
       (assoc
         (checker-results
-          {:diff-output (diff-output-errors output)
-           :incomplete  (incomplete-errors started status)
-           :incompatible-status (incompatible-status-errors status)})
+          {:diff-output         (diff-output-errors output)
+           :incomplete          (incomplete-errors started status)
+           :incompatible-status (incompatible-status-errors status)
+           :nil-workflow-id     @nil-workflow-id-errors})
         :started-count (count started)
         :final-status-counts (final-status-counts status)))))
 
 (defn completion-checker
   "This checker detects several types of errors
 
+      :nil-workflow-id      A create-workflow request returned nil, instead of
+                            an ID string.
       :diff-output          A workflow execution had two different outputs
                             while in the completed state.
       :incomplete           A started workflow execution was not complete at
