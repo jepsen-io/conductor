@@ -17,7 +17,8 @@
                     [random :as rand]
                     [tests :as tests]
                     [util :as util :refer [default]]]
-            [jepsen.conductor [db :as db]
+            [jepsen.conductor [core :as core]
+                              [db :as db]
                               [nemesis :as nemesis]]
             [jepsen.conductor.workload [workflow :as workflow]]
             [jepsen.os.debian :as debian]))
@@ -323,12 +324,13 @@
   "Handles command line arguments. Can either run a test, or a web server for
   browsing results."
   [& args]
-  (cli/run! (merge (cli/single-test-cmd {:test-fn  conductor-test
-                                         :opt-spec cli-opts})
-                   (cli/test-all-cmd
-                     {:tests-fn all-tests
-                      :opt-spec (cli/without-defaults-for
-                                  [:workload :nemesis]
-                                  cli-opts)})
-                   (cli/serve-cmd))
-            args))
+  (with-redefs [jepsen.core/run! core/run-test!]
+    (cli/run! (merge (cli/single-test-cmd {:test-fn  conductor-test
+                                           :opt-spec cli-opts})
+                     (cli/test-all-cmd
+                       {:tests-fn all-tests
+                        :opt-spec (cli/without-defaults-for
+                                    [:workload :nemesis]
+                                    cli-opts)})
+                     (cli/serve-cmd))
+              args)))

@@ -9,8 +9,10 @@
                     [db :as db]
                     [fs-cache :as fs-cache]
                     [role :as role]]
-            [jepsen.conductor.base :refer :all]
-            [jepsen.control.util :as cu]
+            [jepsen.conductor [core :as core]
+                              [base :refer :all]]
+            [jepsen.control [net :as cn]
+                            [util :as cu]]
             [jepsen.os.debian :as debian])
   (:import (java.io File)
            (java.nio.file StandardOpenOption)
@@ -114,8 +116,9 @@
   (start! [this test node]
     (c/su (cu/start-daemon!
             {:env {"CONDUCTOR_SERVER_URL" (worker-server-url test node)
-                   "CONDUCTOR_AUTH_KEY" :TODO
-                   "CONDUCTOR_AUTH_SECRET" :TODO}
+                   "JEPSEN_NODE" node
+                   "JEPSEN_HISTORY_URL"
+                   (str "http://" (cn/control-ip) ":" core/history-port "/")}
              :chdir dir
              :pidfile pid-file
              :logfile log-file}
