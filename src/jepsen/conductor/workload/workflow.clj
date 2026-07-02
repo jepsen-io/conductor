@@ -5,7 +5,7 @@
                           [set :as bs]]
             [clojure.tools.logging :refer [info warn]]
             [clojure [pprint :refer [pprint]]]
-            [dom-top.core :refer [with-retry]]
+            [dom-top.core :refer [loopr with-retry]]
             [jepsen [checker :as checker]
                     [client :as client]
                     [generator :as gen]
@@ -356,6 +356,49 @@
                (t/into [])
                (h/tesser history))))
 
+(defn concurrent-execution-errors
+  "Starts a task which finds a vector of error maps wherever two processes
+  executed the same task in the same workflow instance at the same time, and we
+  received a completion.
+
+  I expect this to fail; it's theoretically impossible to guarantee mutual
+  exclusion. But the locks and leaase systems might make it rare!"
+  [history]
+  (h/task history concurrent-execution []
+          (h/ensure-pair-index history)
+          (->> (t/filter (fn [op]
+                           (and (identical? :execute (:f op))
+                                ; Only ops with a logged completion
+                                (if (h/invoke? op)
+                                  (h/completion history op)
+                                  true))))
+               (t/group-by (juxt (comp :workflow-instance-id :value)
+                                 (comp :reference-task-name :value)))
+               (t/into [])
+               (h/tesser history)
+               vals
+               ; TODO: we can push this down into the fold itself; I'm just
+               ; feeling lazy. If the profiler says it's slow, will rework.
+               (keep (fn [ops]
+                       (loopr [invoke nil]
+                              [op ops]
+                              (case (:type op)
+                                :invoke
+                                (if invoke
+                                  ; Concurrent!
+                                  {:type :concurrent-execution
+                                   :ops  (sort-by :index
+                                                  [invoke
+                                                   op
+                                                   (h/completion history invoke)
+                                                   (h/completion history op)])}
+                                  (recur op))
+
+                                (:ok, :info, :fail)
+                                (recur nil))
+                              nil)))
+               vec)))
+
 (def started-workflows-fold
   "A fold which, given OK ops, finds a set of all acked started workflow IDs."
   (->> (t/filter (h/has-f? :start-workflow))
@@ -445,7 +488,9 @@
 (defrecord CompletionChecker []
   checker/Checker
   (check [this test history opts]
+    (h/ensure-pair-index history)
     (let [nil-workflow-id-errors (nil-workflow-id-errors history)
+          concurrent-execution-errors (concurrent-execution-errors history)
           {:keys [started status output]}
           (->> (t/filter h/ok?)
                (t/fuse
@@ -455,7 +500,8 @@
                (h/tesser history))]
       (assoc
         (checker-results
-          {:diff-output         (diff-output-errors output)
+          {:concurrent-execution @concurrent-execution-errors
+           :diff-output         (diff-output-errors output)
            :incomplete          (incomplete-errors started status)
            :incompatible-status (incompatible-status-errors status)
            :nil-workflow-id     @nil-workflow-id-errors})
@@ -465,14 +511,20 @@
 (defn completion-checker
   "This checker detects several types of errors
 
-      :nil-workflow-id      A create-workflow request returned nil, instead of
-                            an ID string.
+      :concurrent-execution For a single workflow instance and task reference
+                            name, two workers executed that task concurrently.
+
       :diff-output          A workflow execution had two different outputs
                             while in the completed state.
+
       :incomplete           A started workflow execution was not complete at
                             the end of the test.
+
       :incompatible-status  A workflow execution had a status we did not
-                            expect."
+                            expect.
+
+      :nil-workflow-id      A create-workflow request returned nil, instead of
+                            an ID string."
   []
   (CompletionChecker.))
 

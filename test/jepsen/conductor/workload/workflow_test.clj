@@ -1,6 +1,7 @@
 (ns jepsen.conductor.workload.workflow-test
   (:require [clojure [pprint :refer [pprint]]
                      [test :refer :all]]
+            [jepsen [history :as h]]
             [jepsen.conductor.workload.workflow :as w]))
 
 (deftest backpressure-interval-test
@@ -19,3 +20,31 @@
     ; If we end up with 10K elements in queue steady, it'll slow rather than speed up
     (is (= 109614 (w/backpressure-interval 10000 0 int-10khz)))
     ))
+
+(deftest concurrent-execution-errors-test
+  (let [h (h/history
+            [{:process 0, :type :invoke, :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}
+             ; Note that this :info counts as "the end of execution" for our purposes.
+             {:process 0, :type :info,   :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}
+
+             ; Now start it again
+             {:process 1, :type :invoke, :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}
+
+             ; This is fine; different task
+             {:process 2, :type :invoke, :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t2"}}
+             {:process 2, :type :ok,     :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t2"}}
+             ; Also fine; different workflow
+             {:process 3, :type :invoke, :f :execute, :value {:workflow-instance-id "w2", :reference-task-name "t"}}
+             {:process 3, :type :ok,     :f :execute, :value {:workflow-instance-id "w2", :reference-task-name "t"}}
+
+             ; But this, oh, that's a violation
+             {:process 4, :type :invoke, :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}
+             {:process 4, :type :ok,     :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}
+
+             ; Complete
+             {:process 1, :type :ok,     :f :execute, :value {:workflow-instance-id "w", :reference-task-name "t"}}])
+        ]
+    (is (= [{:type :concurrent-execution
+             ; These two ops were concurrently executing the same workflow instance and reference task name
+             :ops (mapv h [2 7 8 9])}]
+           @(w/concurrent-execution-errors h)))))
