@@ -10,10 +10,9 @@
                     [nemesis :as n]
                     [generator :as gen]
                     [net :as net]
-                    [util :as util]
+                    [util :as util :refer [random-nonempty-subset]]
                     [random :as rand]
                     [role :as role]]
-            [clojure.set :as set]
             [jepsen.control.util :as cu]
             [jepsen.nemesis [combined :as nc]
                             [membership :as m]
@@ -62,6 +61,56 @@
                        (pr-str (map (comp n/fs :nemesis) pkgs))))
          (gen/time-limit period gen)
          final-gen]))))
+
+(defn dep-part-package
+  "Partitions between Conductor servers and other systems. Faults are:
+
+  :partition-server-postgres
+  :partition-server-redis
+  :partition-server-worker
+  :partition-server-std-worker
+
+  Asking for a general :partition fault activates all of these."
+  [{:keys [faults db] :as opts}]
+  (let [needed? (seq (set/intersection
+                       #{:partition
+                         :partition-server-postgres
+                         :partition-server-redis
+                         :partition-server-std-worker
+                         :partition-server-worker}
+                       faults))
+        stop {:type :info, :f :stop-partition}
+        ; Constructs a generator for start-partition operations, partitioning
+        ; some servers from some nodes of the given role.
+        start (fn [role]
+                (fn gen [test ctx]
+                  {:type :info
+                   :f :start-partition
+                   :value (n/complete-grudge
+                            [(random-nonempty-subset (role/nodes test :server))
+                             (random-nonempty-subset (role/nodes test role))])}))
+        gen (->> (keys (:roles opts))
+                 (remove #{:server})
+                 ; A generator for each kind of partition
+                 (keep (fn [role]
+                         (let [fault (keyword (str "partition-server-"
+                                                   (name role)))]
+                           (when (or (faults :partition) (faults fault))
+                             (start role)))))
+                 ; And a generic stop-all-partitions error
+                 (concat [(gen/repeat stop)])
+                 vec
+                 gen/mix
+                 (gen/stagger (:interval opts nc/default-interval)))]
+    {:generator       (when needed? gen)
+     :final-generator (when needed? stop)
+     :nemesis         (nc/partition-nemesis db)
+     :perf            #{{:name  "partition"
+                         :start #{:start-partition}
+                         :stop  #{:stop-partition}
+                         :color "#E9DCA0"}}
+     ; For later, it'll be helpful for packages to have associated roles.
+     :role            :conductor}))
 
 ;; Role-specific packages
 
@@ -125,7 +174,7 @@
                                 (map (partial role/restrict-nemesis-package role)))))
                        roles)
                ; Custom packages
-               [])
+               [(dep-part-package opts)])
              (filter :generator))
         nsp (:stable-period opts)]
     ;(info :packages (map (comp n/fs :nemesis) packages))

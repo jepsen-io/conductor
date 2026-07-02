@@ -32,6 +32,13 @@
   "All the workloads we run by default."
   [:workflow])
 
+(def db-node-targets
+  "Different ways we can target single nodes for database faults."
+  #{:one
+    :minority
+    :majority
+    :all})
+
 (def nemeses
   "Basic nemeses we have available."
   #{:kill
@@ -42,6 +49,10 @@
     :kill-worker
     :partition
     :partition-server
+    :partition-server-postgres
+    :partition-server-redis
+    :partition-server-std-worker
+    :partition-server-worker
     :pause
     :pause-postgres
     :pause-redis
@@ -57,34 +68,15 @@
     :clock-worker
     })
 
-(def file-corruption-nemeses
-  "Which nemeses corrupt files?"
-  #{:bitflip-file-chunks
-    :snapshot-file-chunks
-    :truncate-file})
-
-(def db-node-targets
-  "Different ways we can target single nodes for database faults."
-  #{:one
-    :minority
-    :majority
-    :all})
-
 (def standard-nemeses
   "Combinations of nemeses we run by default."
-  [; Nothing
-   []
-   ; One fault at a time
-   [:partition]
-   [:kill]
-   [:pause]
-   [:clock]
-   [:packet]
-   ; General chaos
-   [:partition :pause :kill :clock
-    ;:bitflip-file-chunks :snapshot-file-chunks :truncate-file-chunks
-    ]
-   ])
+  (vec
+    (concat ; Nothing
+            [[]]
+            ; Each of the single nemeses above
+            (->> nemeses sort (map vector))
+            ; General chaos
+            [[:partition :pause :kill :packet :clock]])))
 
 (def special-nemeses
   "A map of special nemesis names to collections of faults."
