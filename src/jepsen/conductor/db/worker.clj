@@ -106,7 +106,10 @@
 
   (teardown! [this test node]
     (db/kill! this test node)
-    (c/su (c/exec :rm :-rf log-file pid-file)))
+    (c/su (c/exec :rm :-rf
+                  log-file
+                  pid-file
+                  (str dir "/incarnation"))))
 
   db/LogFiles
   (log-files [this test node]

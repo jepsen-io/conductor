@@ -71,8 +71,9 @@
         (log-op! history-url
                  {:type    :invoke
                   :f       :execute
-                  :value   {:reference-task-name (.getReferenceTaskName task)
-                            :task-id (.getTaskId task)}})
+                  :value   {:reference-task-name  (.getReferenceTaskName task)
+                            :workflow-instance-id (.getWorkflowInstanceId task)
+                            :task-id              (.getTaskId task)}})
 
         (info (str "Begin task (ref " (.getReferenceTaskName task)
                    ", task id " (.getTaskId task) ")"))

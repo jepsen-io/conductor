@@ -75,7 +75,8 @@
   [history-writer]
   (info "Starting history HTTP history on port" history-port)
   (http-server/run-server
-    (fn handle [req]
+    ; We need bound-fn to pick up on the Jepsen relative time origin
+    (bound-fn handle [req]
       (let [body  (:body req)
             _     (assert (instance? InputStream body))
             op    (-> body
@@ -84,7 +85,7 @@
                       edn/read
                       validate-op
                       h/op
-                      (assoc :time (util/linear-time-nanos)))]
+                      (assoc :time (util/relative-time-nanos)))]
         (info "HTTP op" (pr-str op))
         (log-op op)
         (store.format/append-to-big-vector-block!
