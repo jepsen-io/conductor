@@ -134,10 +134,10 @@
 
   db/Pause
   (pause! [this test node]
-    (c/su (cu/stop-daemon! nil pid-file :STOP)))
+    (c/su (cu/stop-daemon! "java" pid-file :STOP)))
 
   (resume! [this test node]
-    (c/su (cu/stop-daemon! nil pid-file :CONT))))
+    (c/su (cu/stop-daemon! "java" pid-file :CONT))))
 
 (defn db
   "Constructs a worker DB."
