@@ -202,6 +202,9 @@
               #"BACKEND_ERROR"
               (assoc ~op :type :info, :error [:backend-error m#])
 
+              #"Connect timed out"
+              (assoc ~op :type :fail, :error :connect-timed-out)
+
               #"Connection reset"
               (assoc ~op :type :info, :error :connection-reset)
 
