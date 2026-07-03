@@ -280,7 +280,7 @@
       :validate [pos? "Must be a positive number."]]
 
      [nil "--recovery-time-limit SECONDS" "How long to wait after the end of fault injection before beginning the final generator."
-      :default 60
+      :default 300
       :parse-fn parse-long
       :validate [(complement neg?) "Must not be negative"]]
 
@@ -290,7 +290,7 @@
       :validate [#{:single :cluster} "Must be either `single` or `cluster`."]]
 
      [nil "--response-timeout SECONDS" "How long before Conductor considers one of our tasks timed out, and can retry it? You probably want this to be shorter than the recovery period, so that Conductor has a chance to detect and re-schedule tasks that got stuck during the test run."
-      :default 30
+      :default 10
       :parse-fn parse-long
       :validate [pos? "Must be positive"]]
 
