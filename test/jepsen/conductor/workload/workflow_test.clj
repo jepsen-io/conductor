@@ -56,7 +56,6 @@
                         :ops (mapv h [2 7 8 9])}]}
            (:concurrent-execution (check h)))))
 
-  (prn :-----------------------------------------)
   (testing "ignores sequential ops"
     (let [h (h/history
               [{:index 0,
@@ -86,10 +85,7 @@
                 :type :ok,
                 :process :n8.0.1,
                 :f :execute,
-                :value nil}]
-              ; Weird, I think this is a bug in jepsen.history--without dense
-              ; indices, it deadlocks. Have to dig this one out later.
-              {:dense-indices? true})]
+                :value nil}])]
       (is (= nil
              (:concurrent-execution (check h)))))))
 
