@@ -202,6 +202,9 @@
               #"BACKEND_ERROR"
               (assoc ~op :type :info, :error [:backend-error m#])
 
+              #"Connection reset"
+              (assoc ~op :type :info, :error :connection-reset)
+
               #"^Failed to connect to"
               (assoc ~op :type :fail, :error :failed-to-connect)
 
