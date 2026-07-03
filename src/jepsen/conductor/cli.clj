@@ -239,7 +239,7 @@
       :validate [#{:postgres :redis} "Must be either redis or postgres."]]
 
      [nil "--final-time-limit SECONDS" "How long should we run the final generator for, at most? In seconds."
-      :default  300
+      :default  600
       :parse-fn read-string
       :validate [#(and (number? %) (pos? %)) "must be a positive number"]]
 
