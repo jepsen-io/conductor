@@ -407,9 +407,8 @@
                    vec)))))
 
 (defn task-never-started-errors
-  "Takes a set of started workflow IDs and a history. Starts a task which
-  returns a vector of error maps for any case when a workflow was started, but
-  no execution was even attempted."
+  "Takes a history. Starts a task which returns a vector of error maps for any
+  case when a workflow was started, but no execution was even attempted."
   [history]
   (let [fold
         (loopf {:name "task-never-started"}
@@ -464,6 +463,19 @@
                               :workflow-id workflow})))))]
   (h/task history task-never-started []
           (h/fold history fold))))
+
+(defn backend-errors
+  "Takes a history. Starts a task which hunts for `:backend-error` errors,
+  converting them to error maps."
+  [history]
+  (h/task history backend-errors []
+          (->> (t/filter (comp #{:backend-error} first :error))
+               (t/map (fn [op']
+                        {:type :backend-error
+                         :op   (h/invocation history op')
+                         :op'  op'}))
+               (t/into [])
+               (h/tesser history))))
 
 (def started-workflows-fold
   "A fold which, given OK ops, finds a set of all acked started workflow IDs."
@@ -569,7 +581,8 @@
   checker/Checker
   (check [this test history opts]
     (h/ensure-pair-index history)
-    (let [concurrent-execution-errors (concurrent-execution-errors history)
+    (let [backend-errors              (backend-errors history)
+          concurrent-execution-errors (concurrent-execution-errors history)
           nil-workflow-id-errors      (nil-workflow-id-errors history)
           task-never-started-errors   (task-never-started-errors history)
           {:keys [started status output last-queue-size]}
@@ -582,18 +595,21 @@
                (h/tesser history))]
       (assoc
         (checker-results
-          {:concurrent-execution @concurrent-execution-errors
-           :diff-output         (diff-output-errors output)
-           :incomplete          (incomplete-errors started status)
-           :incompatible-status (incompatible-status-errors status)
-           :nil-workflow-id     @nil-workflow-id-errors
-           :task-never-started  @task-never-started-errors})
+          {:backend-error        @backend-errors
+           :concurrent-execution @concurrent-execution-errors
+           :diff-output          (diff-output-errors output)
+           :incomplete           (incomplete-errors started status)
+           :incompatible-status  (incompatible-status-errors status)
+           :nil-workflow-id      @nil-workflow-id-errors
+           :task-never-started   @task-never-started-errors})
         :last-queue-size     last-queue-size
         :started-count       (count started)
         :final-status-counts (final-status-counts status)))))
 
 (defn completion-checker
   "This checker detects several types of errors
+
+      :backend-error        Returns backend errors.
 
       :concurrent-execution For a single workflow instance and task reference
                             name, two workers executed that task concurrently.

@@ -26,6 +26,16 @@
   [history]
   (checker/check (w/completion-checker) {} history {}))
 
+(deftest backend-error-test
+  (let [h (h/history
+            [{:index 21, :time 379337896, :type :invoke, :process 21, :f :start-workflow, :value {:name "greetings", :version 1, :input {"name" "jepsen 19"}}}
+             {:index 32, :time 517876377, :type :info, :process 21, :f :start-workflow, :value {:name "greetings", :version 1, :input {"name" "jepsen 19"}}, :error [:backend-error "BACKEND_ERROR - ERROR: syntax error at or near \"null\"\n  Position: 13"]}])]
+    (is (= {:count 1
+            :examples [{:type :backend-error
+                        :op (h 0)
+                        :op' (h 1)}]}
+           (:backend-error (check h))))))
+
 
 (deftest concurrent-execution-errors-test
   (let [h (h/history
