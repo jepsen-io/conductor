@@ -527,6 +527,13 @@
                   :id       id
                   :statuses (statuses id)})))))
 
+(def normal-errors
+  "These error types are considered normal; while we include them in the
+  output, they don't cause us to return `:valid? false`."
+  #{; Concurrent execution is normal; now that we've demonstrated it in healthy
+    ; clusters, no need to hunt for it any more.
+    :concurrent-execution})
+
 (defn checker-results
   "Takes a map of error types to sequences of errors, and produces a checker
   results map for it."
@@ -539,8 +546,9 @@
               (let [errors (get errors type)]
                 (assoc res type {:count    (count errors)
                                  :examples (take 16 errors)})))
-            {:valid?      (not (seq error-types))
-             :error-types error-types}
+            {:valid?       (not (seq (remove normal-errors error-types)))
+             :normal-types (filter normal-errors error-types)
+             :error-types  (remove normal-errors error-types)}
             error-types)))
 
 (defn final-status-counts
