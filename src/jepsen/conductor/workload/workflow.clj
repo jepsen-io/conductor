@@ -490,6 +490,12 @@
        (t/map :output)
        (t/set)))
 
+(def last-queue-size-fold
+  "A fold which, given OK ops, returns the final size of the decider queue."
+  (->> (t/filter (h/has-f? :queue-size))
+       (t/extremum (fn compare [a b] (compare (:index a) (:index b))))
+       (t/post-combine :value)))
+
 (defn diff-output-errors
   "Takes a map of workflow ID to the set of all outputs it produced once
   completed, and returns a collection of error maps if a single workflow ever
@@ -566,12 +572,13 @@
     (let [concurrent-execution-errors (concurrent-execution-errors history)
           nil-workflow-id-errors      (nil-workflow-id-errors history)
           task-never-started-errors   (task-never-started-errors history)
-          {:keys [started status output]}
+          {:keys [started status output last-queue-size]}
           (->> (t/filter h/ok?)
                (t/fuse
                  {:started started-workflows-fold
                   :status  workflow-status-fold
-                  :output  workflow-output-fold})
+                  :output  workflow-output-fold
+                  :last-queue-size last-queue-size-fold})
                (h/tesser history))]
       (assoc
         (checker-results
@@ -581,7 +588,8 @@
            :incompatible-status (incompatible-status-errors status)
            :nil-workflow-id     @nil-workflow-id-errors
            :task-never-started  @task-never-started-errors})
-        :started-count (count started)
+        :last-queue-size     last-queue-size
+        :started-count       (count started)
         :final-status-counts (final-status-counts status)))))
 
 (defn completion-checker
