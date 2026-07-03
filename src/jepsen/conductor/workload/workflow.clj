@@ -469,7 +469,10 @@
   converting them to error maps."
   [history]
   (h/task history backend-errors []
-          (->> (t/filter (comp #{:backend-error} first :error))
+          (->> (t/filter (fn [op]
+                           (when-let [e (:error op)]
+                             (when (vector? e)
+                               (= :backend-error (first e))))))
                (t/map (fn [op']
                         {:type :backend-error
                          :op   (h/invocation history op')
