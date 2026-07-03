@@ -107,3 +107,46 @@
             :examples [{:type        :task-never-started
                         :workflow-id "a"}]}
            (:task-never-started (check h))))))
+
+(deftest abandoned-test
+  (let [h (h/history
+            [; Start two workflows
+             {:process 0, :type :invoke, :f :start-workflow}
+             {:process 0, :type :ok, :f :start-workflow, :value "a"}
+             {:process 0, :type :invoke, :f :start-workflow}
+             {:process 0, :type :ok, :f :start-workflow, :value "b"}
+             ; Observe that both are running
+             {:process 0, :type :invoke, :f :check-workflow, :value "a"}
+             {:process 0, :type :ok, :f :check-workflow,
+              :value {:id "a", :status :running}}
+             {:process 0, :type :invoke, :f :check-workflow, :value "b"}
+             {:process 0, :type :ok, :f :check-workflow,
+              :value {:id "b", :status :running}}
+             ; And confirm the queue only has one element
+             {:process 0, :type :invoke, :f :queue-size}
+             {:process 0, :type :ok, :f :queue-size, :value 1}])]
+    (is (= {:valid? false,
+            ; Since the final queue size was smaller than the number of pending
+            ; tasks
+            :abandoned {:count 1,
+                        :examples
+                        [{:type :abandoned,
+                          :last-queue-size 1,
+                          :incomplete-count 2}]},
+            ; Since we never observed an execute
+            :task-never-started
+            {:count 2,
+             :examples [{:type :task-never-started, :workflow-id "b"}
+                        {:type :task-never-started, :workflow-id "a"}]},
+            :final-status-counts {:running 2},
+            :normal-types [],
+            :started-count 2,
+            ; Since the final statuses were running
+            :incomplete
+            {:count 2,
+             :examples
+             [{:type :incomplete-at-end, :id "a", :statuses [:running]}
+              {:type :incomplete-at-end, :id "b", :statuses [:running]}]},
+            :last-queue-size 1,
+            :error-types [:abandoned :incomplete :task-never-started]}
+           (check h)))))

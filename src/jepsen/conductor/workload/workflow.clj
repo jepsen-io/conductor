@@ -483,6 +483,17 @@
        (t/map :value)
        (t/set)))
 
+(defn started-workflows
+  "Takes a history and starts a task which returns the set of all acknowledged
+  started workflow IDs."
+  [history]
+  (h/task history started-workflows []
+          (->> (t/filter (h/has-f? :start-workflow))
+               (t/filter h/ok?)
+               (t/map :value)
+               (t/set)
+               (h/tesser history))))
+
 (def workflow-status-fold
   "A fold which, given OK ops, returns a map of workflow ID to a vector of the
   statuses it took on, in OK order."
@@ -491,6 +502,19 @@
        (t/group-by :id)
        (t/map :status)
        (t/into [])))
+
+(defn workflow-statuses
+  "Takes a history and starts a task which returns a map of workflow ID to a
+  vector of the statuses it took on, in OK order."
+  [history]
+  (h/task history workflow-statuses []
+          (->> (t/filter (h/has-f? :check-workflow))
+               (t/filter h/ok?)
+               (t/map :value)
+               (t/group-by :id)
+               (t/map :status)
+               (t/into [])
+               (h/tesser history))))
 
 (def workflow-output-fold
   "A fold which, given OK ops, returns a map of workflow ID to the set of all
@@ -502,48 +526,83 @@
        (t/map :output)
        (t/set)))
 
-(def last-queue-size-fold
-  "A fold which, given OK ops, returns the final size of the decider queue."
-  (->> (t/filter (h/has-f? :queue-size))
-       (t/extremum (fn compare [a b] (compare (:index a) (:index b))))
-       (t/post-combine :value)))
+(defn workflow-outputs
+  "Takes a history and launches a task which returns a map of workflow ID to
+  the set of all outputs it produced once completed."
+  [history]
+  (h/task history workflow-outputs []
+          (->> (t/filter (h/has-f? :check-workflow))
+               (t/filter h/ok?)
+               (t/map :value)
+               (t/group-by :id)
+               (t/filter (comp #{:completed} :status))
+               (t/map :output)
+               t/set
+               (h/tesser history))))
+
+(defn last-queue-size
+  "Takes a history and starts a task which returns the last successful
+  :queue-size value."
+  [history]
+  (h/task history last-queue-size []
+          (->> (t/filter (h/has-f? :queue-size))
+               (t/filter h/ok?)
+               (t/extremum (fn [a b] (compare (:index a) (:index b))))
+               (t/post-combine :value)
+               (h/tesser history))))
 
 (defn diff-output-errors
-  "Takes a map of workflow ID to the set of all outputs it produced once
-  completed, and returns a collection of error maps if a single workflow ever
-  produced different outputs."
-  [outputs]
-  (keep (fn [[id outputs]]
-          (when (< 1 (count outputs))
-            {:type :diff-output
-             :id   id
-             :outputs outputs}))
-        outputs))
+  "Takes a history and a task for a map of workflow ID to the set of all
+  outputs it produced once completed. Starts a task which returns a collection
+  of error maps if a single workflow ever produced different outputs."
+  [history outputs]
+  (h/task history diff-output-errors [outputs outputs]
+          (->> outputs
+               (keep (fn [[id outputs]]
+                       (when (< 1 (count outputs))
+                         {:type :diff-output
+                          :id   id
+                          :outputs outputs})))
+               vec)))
 
 (defn incompatible-status-errors
-  "Takes a map of workflow IDs to vectors of statuses. Returns a collection of
-  error maps for any workflow which had statuses other than :running and
-  :complete. Later, if we add pauses/termination, we might relax this--I'm just
-  trying to get a feel for things right now."
-  [statuses]
-  (keep (fn [[id statuses]]
-          (when (not-every? #{:running :completed} statuses)
-            {:type :incompatible-status
-             :id   id
-             :statuses statuses}))
-        statuses))
+  "Takes a history and a task for a map of workflow IDs to vectors of statuses.
+  Starts a task which returns a collection of error maps for any workflow which
+  had statuses other than :running and :complete. Later, if we add
+  pauses/termination, we might relax this--I'm just trying to get a feel for
+  things right now."
+  [history statuses]
+  (h/task history incompatible-status-errors [statuses statuses]
+          (->> statuses
+               (keep (fn [[id statuses]]
+                       (when (not-every? #{:running :completed} statuses)
+                         {:type :incompatible-status
+                          :id   id
+                          :statuses statuses})))
+               vec)))
 
 (defn incomplete-errors
-  "Takes a set of started workflow IDs and a map of workflow IDs to vectors of
-  statuses. Returns a collection of error maps for any workflow ID which did
-  not have final status :complete."
-  [started statuses]
-  (->> started
-       (keep (fn [id]
-               (when-not (= :completed (peek (statuses id)))
-                 {:type     :incomplete-at-end
-                  :id       id
-                  :statuses (statuses id)})))))
+  "Starts a task which depends on tasks for a set of started workflow IDs and a
+  map of workflow IDs to vectors of statuses. Returns a collection of error
+  maps for any workflow ID which did not have final status :complete."
+  [history started statuses]
+  (h/task history incomplete-errors [started started, statuses statuses]
+          (->> started
+               (keep (fn [id]
+                       (when-not (= :completed (peek (statuses id)))
+                         {:type     :incomplete-at-end
+                          :id       id
+                          :statuses (statuses id)}))))))
+
+(defn final-status-counts
+  "Takes a history and a task for a map of workflow ID to vectors of statuses.
+  Starts a task which returns a frequency map of the final status for each
+  workflow ID."
+  [history statuses]
+  (h/task history final-status-count [statuses statuses]
+          (->> (vals statuses)
+               (map peek)
+               frequencies)))
 
 (def normal-errors
   "These error types are considered normal; while we include them in the
@@ -569,14 +628,6 @@
              :error-types  (remove normal-errors error-types)}
             error-types)))
 
-(defn final-status-counts
-  "Takes a map of workflow ID to vectors of statuses. Returns a frequency map
-  of the final status for each workflow ID."
-  [statuses]
-  (->> (vals statuses)
-       (map peek)
-       frequencies))
-
 (defrecord CompletionChecker []
   checker/Checker
   (check [this test history opts]
@@ -585,31 +636,48 @@
           concurrent-execution-errors (concurrent-execution-errors history)
           nil-workflow-id-errors      (nil-workflow-id-errors history)
           task-never-started-errors   (task-never-started-errors history)
-          {:keys [started status output last-queue-size]}
-          (->> (t/filter h/ok?)
-               (t/fuse
-                 {:started started-workflows-fold
-                  :status  workflow-status-fold
-                  :output  workflow-output-fold
-                  :last-queue-size last-queue-size-fold})
-               (h/tesser history))]
+          started-workflows           (started-workflows history)
+          workflow-statuses           (workflow-statuses history)
+          last-queue-size             (last-queue-size history)
+          workflow-outputs            (workflow-outputs history)
+          incomplete-errors           (incomplete-errors
+                                        history
+                                        started-workflows
+                                        workflow-statuses)
+          diff-output-errors          (diff-output-errors
+                                        history workflow-outputs)
+          incompatible-status-errors  (incompatible-status-errors
+                                        history workflow-statuses)
+          final-status-counts         (final-status-counts
+                                        history workflow-statuses)
+          abandoned-errors (if (and @last-queue-size
+                                    (< @last-queue-size
+                                       (count @incomplete-errors)))
+                             [{:type :abandoned
+                               :last-queue-size @last-queue-size
+                               :incomplete-count (count @incomplete-errors)}]
+                             [])]
       (assoc
         (checker-results
-          {:backend-error        @backend-errors
+          {:abandoned            abandoned-errors
+           :backend-error        @backend-errors
            :concurrent-execution @concurrent-execution-errors
-           :diff-output          (diff-output-errors output)
-           :incomplete           (incomplete-errors started status)
-           :incompatible-status  (incompatible-status-errors status)
+           :diff-output          @diff-output-errors
+           :incomplete           @incomplete-errors
+           :incompatible-status  @incompatible-status-errors
            :nil-workflow-id      @nil-workflow-id-errors
            :task-never-started   @task-never-started-errors})
-        :last-queue-size     last-queue-size
-        :started-count       (count started)
-        :final-status-counts (final-status-counts status)))))
+        :last-queue-size     @last-queue-size
+        :started-count       (count @started-workflows)
+        :final-status-counts @final-status-counts))))
 
 (defn completion-checker
   "This checker detects several types of errors
 
-      :backend-error        Returns backend errors.
+      :abandoned            The final length of the decider queue was shorter
+                            than the number of incomplete workflows.
+
+      :backend-error        Some operation threw a backend error.
 
       :concurrent-execution For a single workflow instance and task reference
                             name, two workers executed that task concurrently.
