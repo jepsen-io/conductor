@@ -214,7 +214,13 @@
               #"^Internal Server Error"
               (assoc ~op :type :info, :error :internal-server-error)
 
+              #"Read timed out"
+              (assoc ~op :type :info, :error :read-timed-out)
+
               #"timeout"
               (assoc ~op :type :info, :error :timeout)
+
+              #"unexpected end of stream"
+              (assoc ~op :type :info, :error [:unexpected-end-of-stream m#])
 
               (throw e#))))))
