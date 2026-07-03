@@ -464,6 +464,10 @@
   (h/task history task-never-started []
           (h/fold history fold))))
 
+(def boring-backend-errors
+  "Backend errors that sound like they might not be worth surfacing"
+  [#"Connection is closed"])
+
 (defn backend-errors
   "Takes a history. Starts a task which hunts for `:backend-error` errors,
   converting them to error maps."
@@ -472,7 +476,10 @@
           (->> (t/filter (fn [op]
                            (when-let [e (:error op)]
                              (when (vector? e)
-                               (= :backend-error (first e))))))
+                               (let [[type msg] e]
+                                 (and (= :backend-error type)
+                                      (not-any? #(re-find % msg)
+                                                boring-backend-errors)))))))
                (t/map (fn [op']
                         {:type :backend-error
                          :op   (h/invocation history op')
