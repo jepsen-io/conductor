@@ -388,21 +388,9 @@
                ; Merge those together
                ([runs bm/empty]
                 [runs']
-                ; Ugh, *another* horrible bug with reduced wrappers. Maybe an
-                ; interaction with loopf?
-                (let [runs  (if (reduced? runs)  @runs runs)
-                      runs' (if (reduced? runs') @runs' runs')]
-                  (bm/merge runs runs' into))))]
+                (recur (bm/merge runs runs' into))))]
     (h/task history concurrent-execution-errors []
-            (let [runs (h/fold history fold)
-                  ; Sigh; there's some sort of horrible bug lurking in
-                  ; jepsen.history.fold which causes this to come out reduced
-                  ; on the first pass. I should dig in and fix it, but not on
-                  ; the clock for this client--that basement is very deep, and
-                  ; very dark, and very much full of spiders
-                  runs (if (reduced? runs)
-                         @runs
-                         runs)]
+            (let [runs (h/fold history fold)]
               (->> (bm/values runs)
                    (keep (fn [intervals]
                            ; Look for an intersection
