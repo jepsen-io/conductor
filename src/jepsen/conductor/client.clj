@@ -198,6 +198,10 @@
         (catch ConductorClientException e#
           (let [m# (.getMessage e#)]
             (condp re-find m#
+              ; OK, sure
+              #"$^"
+              (assoc ~op :type :info, :error :blank-exception)
+
               ; Huh.
               #"BACKEND_ERROR"
               (assoc ~op :type :info, :error [:backend-error m#])
