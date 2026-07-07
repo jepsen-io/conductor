@@ -93,15 +93,20 @@
 
                 ; Different input
                 (not= input (:input value))
-                (Task. input-index
-                       input
-                       outputs
-                       (bs/add errors
-                               {:type      :different-task-input
-                                :expected input
-                                :actual   (:input value)
-                                :op1      (h/get-index history input-index)
-                                :op2      op}))
+                (let [op1 (h/get-index history input-index)
+                      op1' (when (h/invoke? op1)
+                             (h/completion history op1))]
+                  (Task. input-index
+                         input
+                         outputs
+                         (bs/add errors
+                                 (cond->
+                                   {:type      :different-task-input
+                                    :expected input
+                                    :actual   (:input value)
+                                    :op1      (h/get-index history input-index)
+                                    :op2      op}
+                                   op1' (assoc :op1' op1')))))
 
                 ; Fine; this is consistent
                 true
