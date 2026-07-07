@@ -99,14 +99,14 @@
       (is (= nil
              (:concurrent-execution (check h)))))))
 
-(deftest task-never-started-test
+(deftest task-never-executed-test
   (let [h (h/history
             [{:process 0, :type :invoke, :f :start-workflow}
              {:process 0, :type :ok, :f :start-workflow, :value "a"}])]
     (is (= {:count 1
-            :examples [{:type        :task-never-started
+            :examples [{:type        :task-never-executed
                         :workflow-id "a"}]}
-           (:task-never-started (check h))))))
+           (:task-never-executed (check h))))))
 
 (deftest abandoned-test
   (let [h (h/history
@@ -134,19 +134,189 @@
                           :last-queue-size 1,
                           :incomplete-count 2}]},
             ; Since we never observed an execute
-            :task-never-started
+            :task-never-executed
             {:count 2,
-             :examples [{:type :task-never-started, :workflow-id "b"}
-                        {:type :task-never-started, :workflow-id "a"}]},
+             :examples [{:type :task-never-executed, :workflow-id "b"}
+                        {:type :task-never-executed, :workflow-id "a"}]},
             :final-status-counts {:running 2},
-            :normal-types [],
+            :normal-types #{},
             :started-count 2,
             ; Since the final statuses were running
             :incomplete
             {:count 2,
              :examples
-             [{:type :incomplete-at-end, :id "a", :statuses [:running]}
-              {:type :incomplete-at-end, :id "b", :statuses [:running]}]},
+             [{:type :incomplete, :id "a", :statuses [:running]}
+              {:type :incomplete, :id "b", :statuses [:running]}]},
             :last-queue-size 1,
-            :error-types [:abandoned :incomplete :task-never-started]}
+            :error-types #{:abandoned :incomplete :task-never-executed}}
            (check h)))))
+
+(deftest different-workflow-input-test
+  ; When check-workflow reports an inconsistent input with the start...
+  (let [h (h/history
+            [{:process 1, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 1, :type :ok, :f :check-workflow, :value {:id     "w1"
+                                                                 :status :running
+                                                                 :input {"in" "red"}}}
+             ; Even if the start-workflow happens out of order--this is
+             ; nonphysical but we want to stress the pending fsm
+             {:process 0, :type :invoke, :f :start-workflow, :value {:input {"in" "blue"}}}
+             {:process 0, :type :ok, :f :start-workflow, :value "w1"}])]
+    (is (= {:valid? false
+            :started-count 1
+            :final-status-counts {:running 1}
+            :normal-types #{}
+            :error-types #{:incomplete :task-never-executed :different-workflow-input}
+            :incomplete {:count 1
+                         :examples [{:type :incomplete
+                                     :id "w1"
+                                     :statuses [:running]}]}
+            :task-never-executed {:count 1
+                                  :examples [{:type :task-never-executed
+                                              :workflow-id "w1"}]}
+            :different-workflow-input {:count 1
+                                       :examples [{:type        :different-workflow-input
+                                                   :workflow-id "w1"
+                                                   :op1         (h 2)
+                                                   :op2         (h 1)
+                                                   :expected {"in" "blue"}
+                                                   :actual   {"in" "red"}}]}
+            :last-queue-size nil}
+           (check h)))))
+
+(deftest different-workflow-output-test
+  ; When check-workflow reports two inconsistent outputs...
+  (let [h (h/history
+            [{:process 1, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 1, :type :ok, :f :check-workflow, :value {:id     "w1"
+                                                                 :status :completed
+                                                                 :input :x
+                                                                 :output :y}}
+             ; Even if the start-workflow happens out of order--this is
+             ; nonphysical but we want to stress the pending fsm
+             {:process 0, :type :invoke, :f :start-workflow, :value {:input :x}}
+             {:process 0, :type :ok, :f :start-workflow, :value "w1"}
+             {:process 2, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 2, :type :ok, :f :check-workflow, :value {:id "w1"
+                                                                 :status :completed
+                                                                 :input :x
+                                                                 ; Changed!
+                                                                 :output :z}}])]
+    (is (= {:valid? false
+            :started-count 1
+            :final-status-counts {:completed 1}
+            :normal-types #{}
+            :error-types #{:task-never-executed :different-workflow-output}
+            :task-never-executed {:count 1
+                                  :examples [{:type :task-never-executed
+                                              :workflow-id "w1"}]}
+            :different-workflow-output {:count 1
+                                        :examples [{:type        :different-workflow-output
+                                                    :workflow-id "w1"
+                                                    :op1         (h 5)
+                                                    :op2         (h 1)
+                                                    :expected :z
+                                                    :actual   :y}]}
+            :last-queue-size nil}
+           (check h)))))
+
+(deftest different-task-input-test
+  (testing "different start-workflow and execute input"
+    (let [h (h/history
+              [{:process 0, :type :invoke, :f :start-workflow, :value {:input {"in" "blue"}}}
+               {:process 0, :type :ok, :f :start-workflow, :value "w1"}
+               {:process 1, :type :invoke, :f :execute, :value {:reference-task-name "t1"
+                                                                :workflow-instance-id "w1"
+                                                                :task-id              "t"
+                                                                :input                {"in" "red"}
+                                                                :output               {}}}
+               {:process 2, :type :invoke, :f :check-workflow, :value "w1"}
+               {:process 2, :type :ok, :f :check-workflow, :value {:id "w1", :status :completed}}])]
+      (is (= {:valid? false
+              :started-count 1
+              :last-queue-size nil
+              :final-status-counts {:completed 1}
+              :normal-types #{}
+              :error-types #{:different-task-input}
+              :different-task-input
+              {:count 1
+               :examples [{:type     :different-task-input
+                           :op1      (h 0)
+                           :op2      (h 2)
+                           :expected {"in" "blue"}
+                           :actual   {"in" "red"}}]}}
+             (check h))))))
+
+(deftest impossible-output-test
+  ; A workflow returns a value produced by no execution
+  (let [h (h/history
+            [{:process 0, :type :invoke, :f :execute, :value {:reference-task-name  "t1"
+                                                              :workflow-instance-id "w1"
+                                                              :task-id              "t"
+                                                              :input                {"in" "red"}
+                                                              :output               {"out" "star"}}}
+             {:process 1, :type :invoke, :f :start-workflow, :value {:input {"in" "red"}}}
+             {:process 1, :type :ok, :f :start-workflow, :value "w1"}
+             {:process 2, :type :invoke, :f :execute, :value {:reference-task-name "t1"
+                                                              :workflow-instance-id "w1"
+                                                              :task-id              "t"
+                                                              :input                {"in" "red"}
+                                                              :output               {"out" "plain"}}}
+             ; Whoah, weird output
+             {:process 3, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 3, :type :ok, :f :check-workflow, :value {:id "w1"
+                                                                 :status :completed
+                                                                 :input  {"in" "red"}
+                                                                 :output {"out" "bouba"}}}])]
+    (is (= {:valid? false
+            :started-count 1
+            :last-queue-size nil
+            :final-status-counts {:completed 1}
+            :normal-types #{}
+            :error-types #{:impossible-output}
+            :impossible-output
+            {:count 1
+             :examples [{:type        :impossible-output
+                         :workflow-id "w1"
+                         :op          (h 5)
+                         :expected    #{{"out" "star"} {"out" "plain"}}
+                         :actual      {"out" "bouba"}}]}}
+           (check h)))))
+
+(deftest different-task-input-test
+  (let [h (h/history
+            [{:process 0, :type :invoke, :f :execute, :value {:reference-task-name  "t1"
+                                                              :workflow-instance-id "w1"
+                                                              :task-id              "t"
+                                                              :input                {"in" "red"}
+                                                              :output               {"out" "star"}}}
+             {:process 1, :type :invoke, :f :start-workflow, :value {:input {"in" "red"}}}
+             {:process 1, :type :ok, :f :start-workflow, :value "w1"}
+             ; Wrong input
+             {:process 2, :type :invoke, :f :execute, :value {:reference-task-name "t1"
+                                                              :workflow-instance-id "w1"
+                                                              :task-id              "t"
+                                                              :input                {"in" "blue"}
+                                                              :output               {"out" "plain"}}}
+             {:process 3, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 3, :type :ok, :f :check-workflow, :value {:id "w1"
+                                                                 :status :completed
+                                                                 :input  {"in" "red"}
+                                                                 :output {"out" "plain"}}}])]
+    (is (= {:valid? false
+            :started-count 1
+            :last-queue-size nil
+            :final-status-counts {:completed 1}
+            :normal-types #{}
+            :error-types #{:different-task-input}
+            :different-task-input
+            {:count 1
+             :examples [{:type        :different-task-input
+                         :workflow-id "w1"
+                         :task-reference-name "t1"
+                         :op1         (h 1)
+                         :op2         (h 3)
+                         :expected    {"in" "red"}
+                         :actual      {"in" "blue"}}]}}
+           (check h)))))
+

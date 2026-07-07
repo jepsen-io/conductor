@@ -14,6 +14,7 @@
                     [random :as rand]
                     [role :as role]]
             [jepsen.conductor.client :as c]
+            [jepsen.conductor.checker.workflow :as checker.workflow]
             [jepsen.history.fold :refer [loopf]]
             [tesser.core :as t])
   (:import (com.netflix.conductor.client.exception ConductorClientException)))
@@ -227,9 +228,9 @@
                   interval
                   last-measurement)]))))
 
-  ; When we get an :ok :queue-size, we need to update our state.
+  ; When we get an :queue-size, we need to update our state.
   (update [this test ctx op]
-    (if (and (h/ok? op)
+    (if (and (not (h/invoke? op))
              (identical? :queue-size (:f op)))
       (let [measurement' {:time (:time op)
                           :size (:value op)}
@@ -397,72 +398,16 @@
                            (loopr [a  -2
                                    a' -1]
                                   [[b b'] (sort intervals)]
-                                  (if (< b a')
-                                    ; Concurrent!
-                                    {:type :concurrent-execution
-                                     :ops  (mapv (partial h/get-index history)
-                                                 (sort [a a' b b']))}
-                                    (recur b b'))
+                                  (let [b (long b)
+                                        b' (long b')]
+                                    (if (< b a')
+                                      ; Concurrent!
+                                      {:type :concurrent-execution
+                                       :ops  (mapv (partial h/get-index history)
+                                                   (sort [a a' b b']))}
+                                      (recur b b')))
                                   nil)))
                    vec)))))
-
-(defn task-never-started-errors
-  "Takes a history. Starts a task which returns a vector of error maps for any
-  case when a workflow was started, but no execution was even attempted."
-  [history]
-  (let [fold
-        (loopf {:name "task-never-started"}
-               ; Reducer: build up a set of workflows that haven't been
-               ; executed yet. Note that a workflow could execute *before* it's
-               ; acknowledged, so we have to keep track of two bounds here.
-               ([; A set of started but un-executed workflows
-                 unexecuted (b/linear bs/empty)
-                 ; A set of executed but unstarted workflows
-                 unstarted (b/linear bs/empty)]
-                [op]
-                (case (:f op)
-                  ; Fresh workflow
-                  :start-workflow
-                  (if (= :ok (:type op))
-                    (let [id (:value op)]
-                      (if (bs/contains? unstarted id)
-                        ; We just learned of the acknowledgement of a
-                        ; workflow we know is already executing.
-                        (recur (bs/remove unexecuted id)
-                               (bs/remove unstarted id))
-                        ; This is a fresh workflow
-                        (recur (bs/add unexecuted id)
-                               unstarted)))
-                    (recur unexecuted unstarted))
-
-                  :execute (if (h/invoke? op)
-                             (let [id (:workflow-instance-id (:value op))]
-                               (if (bs/contains? unexecuted id)
-                                 ; Executing a started workflow
-                                 (recur (bs/remove unexecuted id)
-                                        (bs/remove unstarted id))
-                                 ; Executing a workflow we haven't learned about
-                                 (recur unexecuted
-                                        (bs/add unstarted id))))
-                             (recur unexecuted unstarted))
-
-                  (recur unexecuted unstarted))
-                [(b/forked unexecuted)
-                 (b/forked unstarted)])
-               ; Combiner: union all the unexecuted and unstarted sets, and
-               ; take the difference.
-               ([unexecuted (b/linear bs/empty)
-                 unstarted  (b/linear bs/empty)]
-                [[unexecuted' unstarted']]
-                (recur (bs/union unexecuted unexecuted')
-                       (bs/union unstarted unstarted'))
-                ; And subtract
-                (->> (bs/difference unexecuted unstarted)
-                     (mapv (fn [workflow]
-                             {:type :task-never-started
-                              :workflow-id workflow})))))]
-  (h/task history task-never-started []
-          (h/fold history fold))))
 
 (def boring-backend-errors
   "Backend errors that sound like they might not be worth surfacing"
@@ -487,12 +432,6 @@
                (t/into [])
                (h/tesser history))))
 
-(def started-workflows-fold
-  "A fold which, given OK ops, finds a set of all acked started workflow IDs."
-  (->> (t/filter (h/has-f? :start-workflow))
-       (t/map :value)
-       (t/set)))
-
 (defn started-workflows
   "Takes a history and starts a task which returns the set of all acknowledged
   started workflow IDs."
@@ -503,15 +442,6 @@
                (t/map :value)
                (t/set)
                (h/tesser history))))
-
-(def workflow-status-fold
-  "A fold which, given OK ops, returns a map of workflow ID to a vector of the
-  statuses it took on, in OK order."
-  (->> (t/filter (h/has-f? :check-workflow))
-       (t/map :value)
-       (t/group-by :id)
-       (t/map :status)
-       (t/into [])))
 
 (defn workflow-statuses
   "Takes a history and starts a task which returns a map of workflow ID to a
@@ -525,16 +455,6 @@
                (t/map :status)
                (t/into [])
                (h/tesser history))))
-
-(def workflow-output-fold
-  "A fold which, given OK ops, returns a map of workflow ID to the set of all
-  outputs it produced once completed."
-  (->> (t/filter (h/has-f? :check-workflow))
-       (t/map :value)
-       (t/group-by :id)
-       (t/filter (comp #{:completed} :status))
-       (t/map :output)
-       (t/set)))
 
 (defn workflow-outputs
   "Takes a history and launches a task which returns a map of workflow ID to
@@ -561,20 +481,6 @@
                (t/post-combine :value)
                (h/tesser history))))
 
-(defn diff-output-errors
-  "Takes a history and a task for a map of workflow ID to the set of all
-  outputs it produced once completed. Starts a task which returns a collection
-  of error maps if a single workflow ever produced different outputs."
-  [history outputs]
-  (h/task history diff-output-errors [outputs outputs]
-          (->> outputs
-               (keep (fn [[id outputs]]
-                       (when (< 1 (count outputs))
-                         {:type :diff-output
-                          :id   id
-                          :outputs outputs})))
-               vec)))
-
 (defn incompatible-status-errors
   "Takes a history and a task for a map of workflow IDs to vectors of statuses.
   Starts a task which returns a collection of error maps for any workflow which
@@ -600,7 +506,7 @@
           (->> started
                (keep (fn [id]
                        (when-not (= :completed (peek (statuses id)))
-                         {:type     :incomplete-at-end
+                         {:type     :incomplete
                           :id       id
                           :statuses (statuses id)}))))))
 
@@ -634,8 +540,10 @@
                 (assoc res type {:count    (count errors)
                                  :examples (take 16 errors)})))
             {:valid?       (not (seq (remove normal-errors error-types)))
-             :normal-types (filter normal-errors error-types)
-             :error-types  (remove normal-errors error-types)}
+             :normal-types (into (sorted-set)
+                                 (filter normal-errors error-types))
+             :error-types  (into (sorted-set)
+                                 (remove normal-errors error-types))}
             error-types)))
 
 (defrecord CompletionChecker []
@@ -645,7 +553,6 @@
     (let [backend-errors              (backend-errors history)
           concurrent-execution-errors (concurrent-execution-errors history)
           nil-workflow-id-errors      (nil-workflow-id-errors history)
-          task-never-started-errors   (task-never-started-errors history)
           started-workflows           (started-workflows history)
           workflow-statuses           (workflow-statuses history)
           last-queue-size             (last-queue-size history)
@@ -654,12 +561,11 @@
                                         history
                                         started-workflows
                                         workflow-statuses)
-          diff-output-errors          (diff-output-errors
-                                        history workflow-outputs)
           incompatible-status-errors  (incompatible-status-errors
                                         history workflow-statuses)
           final-status-counts         (final-status-counts
                                         history workflow-statuses)
+          workflow-errors             (checker.workflow/errors history)
           abandoned-errors (if (and @last-queue-size
                                     (< @last-queue-size
                                        (count @incomplete-errors)))
@@ -669,14 +575,13 @@
                              [])]
       (assoc
         (checker-results
-          {:abandoned            abandoned-errors
-           :backend-error        @backend-errors
-           :concurrent-execution @concurrent-execution-errors
-           :diff-output          @diff-output-errors
-           :incomplete           @incomplete-errors
-           :incompatible-status  @incompatible-status-errors
-           :nil-workflow-id      @nil-workflow-id-errors
-           :task-never-started   @task-never-started-errors})
+          (merge-with into @workflow-errors
+                      {:abandoned            abandoned-errors
+                       :backend-error        @backend-errors
+                       :concurrent-execution @concurrent-execution-errors
+                       :incomplete           @incomplete-errors
+                       :incompatible-status  @incompatible-status-errors
+                       :nil-workflow-id      @nil-workflow-id-errors}))
         :last-queue-size     @last-queue-size
         :started-count       (count @started-workflows)
         :final-status-counts @final-status-counts))))
@@ -692,8 +597,16 @@
       :concurrent-execution For a single workflow instance and task reference
                             name, two workers executed that task concurrently.
 
-      :diff-output          A workflow execution had two different outputs
-                            while in the completed state.
+      :different-task-input       A single task had two different inputs
+
+      :different-workflow-input   A workflow execution had two different
+                                  inputs.
+
+      :different-workflow-output    A workflow execution had two different
+                                    outputs in the completed state.
+
+      :impossible-output    A workflow produced an output that was consistent
+                            with none of its task executions.
 
       :incomplete           A started workflow execution was not complete at
                             the end of the test.
@@ -704,8 +617,8 @@
       :nil-workflow-id      A create-workflow request returned nil, instead of
                             an ID string.
 
-      :task-never-started   A workflow was started but no worker was ever asked
-                            to attempt a task for it."
+      :task-never-executed  A workflow was started but no worker was ever asked
+                            to execute some task for it."
   []
   (CompletionChecker.))
 

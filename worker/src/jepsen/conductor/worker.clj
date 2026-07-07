@@ -2,6 +2,7 @@
   (:gen-class)
   (:require [clojure.java.io :as io]
             [clojure.tools.logging :refer [info warn fatal]]
+            [jepsen.random :as rand]
             [org.httpkit.client :as http]
             [unilog.config :as unilog])
   (:import (com.netflix.conductor.client.automator TaskRunnerConfigurer
@@ -66,22 +67,30 @@
   (execute [_ task]
     ; Record that we're starting invocation
     (let [; We use this to suppress multiple complete ops
-          complete? (atom false)]
+          complete? (atom false)
+          ; We want nondeterministic output here; it's what will let us
+          ; determine whether Conductor provides determinism.
+          output    {"out" (rand/long)}]
       (try
         (log-op! history-url
                  {:type    :invoke
                   :f       :execute
                   :value   {:reference-task-name  (.getReferenceTaskName task)
                             :workflow-instance-id (.getWorkflowInstanceId task)
-                            :task-id              (.getTaskId task)}})
+                            :task-id              (.getTaskId task)
+                            :input                (into {} (.getInputData task))
+                            :output               output}})
 
         (info (str "Begin task (ref " (.getReferenceTaskName task)
                    ", task id " (.getTaskId task) ")"))
 
-        (let [name (.. task getInputData (get "name"))
-              res  (TaskResult. task)]
+        ; Pretend to do work. We intentionally want to trigger the timeout
+        ; sometimes.
+        (Thread/sleep (rand/zipf 2.0 30000))
+        (let [res (TaskResult. task)]
           (.setStatus res TaskResult$Status/COMPLETED)
-          (.addOutputData res "greeting" (str "hello, " name))
+          (doseq [[k v] output]
+            (.addOutputData res k v))
           (info (str "Complete task (ref " (.getReferenceTaskName task)
                      ", task id " (.getTaskId task) ")"))
 

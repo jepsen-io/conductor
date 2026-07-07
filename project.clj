@@ -29,4 +29,5 @@
              "-Djava.net.preferIPv4Stack=true"
              "-server"]
   :profiles {:uberjar {:aot :all}
-             :dev {:dependencies [[criterium "0.4.6"]]}})
+             :dev {:dependencies [[criterium "0.4.6"]]}}
+  :test-selectors {:focus :focus})
