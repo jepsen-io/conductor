@@ -453,8 +453,10 @@
            ; A map of input to workflow IDs
            input->id (b/linear bm/empty)
            ; A map of input to start-workflow invoke ops, when we don't know
-           ; what the workflow ID is.
-           input->start-workflow (b/linear bm/empty)]
+           ; what the workflow ID is. We're going to iterate over this in
+           ; apply-mystery-start-workflows, and it should be infrequently used,
+           ; so we use the forked variant.
+           input->start-workflow bm/empty]
           [op]
           (if-not (h/invoke? op)
             ; We apply completions in the same pass as invokes
