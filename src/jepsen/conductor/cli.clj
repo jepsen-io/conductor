@@ -20,6 +20,7 @@
             [jepsen.conductor [core :as core]
                               [db :as db]
                               [nemesis :as nemesis]]
+            [jepsen.conductor.checker.plots :as plots]
             [jepsen.conductor.workload [workflow :as workflow]]
             [jepsen.os.debian :as debian]))
 
@@ -208,6 +209,7 @@
                         :clock      (checker/clock-plot)
                         :stats      (checker/stats)
                         :exceptions (checker/unhandled-exceptions)
+                        :queue-size (plots/checker)
                         :workload   (:checker workload)})
            :client    (:client workload)
            :nemesis   (:nemesis nemesis jepsen.nemesis/noop)
