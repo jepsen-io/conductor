@@ -228,9 +228,9 @@
                   interval
                   last-measurement)]))))
 
-  ; When we get an :queue-size, we need to update our state.
+  ; When we get an :ok :queue-size, we need to update our state.
   (update [this test ctx op]
-    (if (and (not (h/invoke? op))
+    (if (and (h/ok? op)
              (identical? :queue-size (:f op)))
       (let [measurement' {:time (:time op)
                           :size (:value op)}
