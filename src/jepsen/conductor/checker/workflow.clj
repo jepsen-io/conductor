@@ -380,18 +380,24 @@
   "Takes an invoke, a complete, and returns the workflow ID that operation was
   interacting with, or nil."
   [op op']
-  (case (:f op)
-    :check-workflow
-    (:value op)
+  (when-let [id (case (:f op)
+                  :check-workflow
+                  (:value op)
 
-    :execute
-    (:workflow-instance-id (:value op))
+                  :execute
+                  (:workflow-instance-id (:value op))
 
-    :start-workflow
-    (:value op')
+                  :start-workflow
+                  (when (and op' (h/ok? op'))
+                    (:value op'))
 
-    :queue-size
-    nil))
+                  :queue-size
+                  nil)]
+    (assert (string? id)
+            (str "Extracted non-string workflow ID from\n"
+                 (pr-str op) "\n"
+                 (pr-str op')))
+    id))
 
 (defn op-input
   "Takes an invoke, a complete, and returns a workflow input that operation
