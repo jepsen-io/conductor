@@ -59,6 +59,15 @@
   [model history]
   (fixed-point #(flush-1 % history) model))
 
+(defn step+
+  "Like step, but if the model returns ::pending, adds the op to the :pending
+  set."
+  [model history op]
+  (let [model' (step model history op)]
+    (if (identical? ::pending model')
+      (update model :pending bs/add op)
+      model')))
+
 (defrecord Task [; The index of the input op. -1 initially.
                  ^long input-index
                  ; The task input
@@ -367,8 +376,8 @@
                   :pending      bs/empty
                   :errors       bs/empty}))
 
-(defn op-workflow
-  "Takes an invoke, a complete, and returns the workflow that operation was
+(defn op-workflow-id
+  "Takes an invoke, a complete, and returns the workflow ID that operation was
   interacting with, or nil."
   [op op']
   (case (:f op)
@@ -384,64 +393,139 @@
     :queue-size
     nil))
 
+(defn op-input
+  "Takes an invoke, a complete, and returns a workflow input that operation
+  knew about, or nil."
+  [op op']
+  (case (:f op)
+    :check-workflow
+    (:input (:value op'))
+
+    :execute
+    (:input (:value op))
+
+    :start-workflow
+    (:input (:value op))
+
+    :queue-size
+    nil))
+
+(defn apply-mystery-start-workflows
+  "Takes a history, a map of workflow ID to Workflow, a map of inputs to IDs,
+  and a map of inputs to start-workflow invocations where we don't know the ID.
+  Uses the input->id map to apply as many of the mystery start-workflow
+  operations as possible. Returns a pair of [workflows'
+  input->start-workflows']."
+  [history workflows input->id input->start-workflow]
+  (loopr [workflows'              workflows
+          input->start-workflow'  input->start-workflow]
+         [pair input->start-workflow]
+         (let [input (bm/key pair)]
+           (if-let [id (bm/get input->id input)]
+             ; Ah, good, we know the ID now. We can apply this to the right
+             ; workflow.
+             (let [w  (bm/get workflows' id ::not-found)
+                   w  (if (identical? w ::not-found)
+                        (workflow id)
+                        w)
+                   op (bm/value pair)
+                   w' (step+ w history op)]
+               (recur (bm/put workflows' id w')
+                      (bm/remove input->start-workflow' input)))
+             ; Dunno what this was
+             (recur workflows' input->start-workflow')))))
+
 (defn check-fold
   "A fold which checks each workflow independently, returning a map of error
   types to vectors of errors."
   [history]
   (loopf {:name "workflow"
           :associative? true}
-
          ; Apply each invoke and its corresponding completion, building up a
          ; map of workflow IDs to workflow states.
-         ([workflows (b/linear bm/empty)]
+         ([workflows (b/linear bm/empty)
+           ; A map of input to workflow IDs
+           input->id (b/linear bm/empty)
+           ; A map of input to start-workflow invoke ops, when we don't know
+           ; what the workflow ID is.
+           input->start-workflow (b/linear bm/empty)]
           [op]
           (if-not (h/invoke? op)
             ; We apply completions in the same pass as invokes
-            (recur workflows)
+            (recur workflows input->id input->start-workflow)
+            ; We have an invoke
             (let [op' (h/completion history op)
-                  id  (op-workflow op op')]
+                  id  (op-workflow-id op op')
+                  input (op-input op op')]
               (if (nil? id)
-                (recur workflows)
-                (let [w   (bm/get workflows id ::not-found)
+                (if (and (identical? :start-workflow (:f op))
+                         (not (nil? input)))
+                  ; We tried to start a workflow but we don't know its ID.
+                  ; We'll come back to this later.
+                  (recur workflows input->id
+                         (bm/put input->start-workflow input op))
+                  (recur workflows input->id input->start-workflow))
+
+                ; We have a workflow ID.
+                (let [; If we have an input too, remember this mapping.
+                      input->id (if input
+                                  (bm/put input->id input id)
+                                  input->id)
+                      w   (bm/get workflows id ::not-found)
                       w   (if (identical? ::not-found w)
                             (workflow id)
                             w)
                       ; Apply invocation
-                      w' (step w history op)
-                      w  (if  (identical? ::pending w')
-                           (update w :pending bs/add op)
-                           w')]
+                      w (step+ w history op)]
                   (if (nil? op')
                     ; Done here
-                    (recur (bm/put workflows id w))
+                    (recur (bm/put workflows id w)
+                           input->id
+                           input->start-workflow)
                     ; Apply completion
-                    (let [w' (step w history op')
-                          w  (if (identical? ::pending w')
-                               (update w :pending bs/add op')
-                               w')]
-                      (recur (bm/put workflows id w))))))))
-          ; At the end of a chunk, try to flush anything pending; this helps us
-          ; retain less state through the reduction pass, and we want to do as
-          ; much of this in the parallel phase as possible.
-          (-> workflows
-              (bm/map-values (fn [k workflow] (flush workflow history)))
-              b/forked))
+                    (let [w (step+ w history op')]
+                      (recur (bm/put workflows id w)
+                             input->id
+                             input->start-workflow)))))))
+          ; At the end of a chunk...
+          (let [; Try to apply any start-workflow ops we weren't sure about.
+                [workflows input->start-workflow]
+                (apply-mystery-start-workflows
+                  history workflows input->id input->start-workflow)
+                ; And try to flush anything pending
+                workflows
+                (bm/map-values workflows (fn [k workflow]
+                                          (flush workflow history)))]
+            ; And seal
+            [(b/forked workflows)
+             (b/forked input->id)
+             (b/forked input->start-workflow)]))
 
-         ; Now merge together workflows
-         ([workflows (b/linear bm/empty)]
-          [workflows2]
+         ; Now merge together workflows etc.
+         ([workflows              (b/linear bm/empty)
+           input->id              (b/linear bm/empty)
+           input->start-workflow  (b/linear bm/empty)]
+          [[workflows2 input->id2 input->start-workflow2]]
+          ; Just merge for now
           (recur (bm/merge workflows workflows2
                            (fn [w1 w2]
-                             (merge w1 w2 history))))
-          ; Flush and finalize all workloads
-          (loopr [errors (b/linear bs/empty)]
-                 [workflow (bm/values workflows)]
-                 (recur (bs/union errors
-                                  (-> workflow
-                                      (flush history)
-                                      (finalize history))))
-                 ; And return errors grouped by type.
-                 (group-by :type errors)))))
+                             (merge w1 w2 history)))
+                 (bm/merge input->id input->id2)
+                 (bm/merge input->start-workflow input->start-workflow2))
+          ; Finally
+          (let [; Try to apply unknown start-workflow ops
+                [workflows] (apply-mystery-start-workflows
+                              history workflows input->id
+                              input->start-workflow)]
+            ; Flush and finalize all workloads
+            (loopr [errors (b/linear bs/empty)]
+                   [workflow (bm/values workflows)]
+                   (recur (bs/union errors
+                                    (-> workflow
+                                        (flush history)
+                                        (finalize history))))
+                   ; And return errors grouped by type.
+                   (group-by :type errors))))))
 
 (defn errors
   "Starts a task that checks a history for errors."

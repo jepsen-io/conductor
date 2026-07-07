@@ -320,3 +320,36 @@
                          :actual      {"in" "blue"}}]}}
            (check h)))))
 
+(deftest start-workflow-info-task-input-test
+  ; We want to be able to stitch together a task even if we don't get its ID
+  ; back from start-workflow, based on its unique input.
+  (let [h (h/history
+            [; Start-workflow fails
+             {:process 1, :type :invoke, :f :start-workflow, :value {:input {"in" "red"}}}
+             {:process 1, :type :info, :f :start-workflow, :value nil}
+             ; But we pick it up from this task input
+             {:process 0, :type :invoke, :f :execute, :value {:reference-task-name  "t1"
+                                                              :workflow-instance-id "w1"
+                                                              :task-id              "t"
+                                                              :input                {"in" "red"}
+                                                              :output               {"out" "star"}}}
+             ; And when we check it, we find the wrong output
+             {:process 3, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 3, :type :ok, :f :check-workflow, :value {:id "w1"
+                                                                 :status :completed
+                                                                 :input  {"in" "red"}
+                                                                 :output {"out" "plain"}}}])]
+    (is (= {:valid? false
+            :started-count 0 ; We're not smart enough to know this started
+            :last-queue-size nil
+            :final-status-counts {:completed 1}
+            :normal-types #{}
+            :error-types #{:impossible-output}
+            :impossible-output
+            {:count 1
+             :examples [{:type        :impossible-output
+                         :workflow-id "w1"
+                         :op          (h 4)
+                         :expected    #{{"out" "star"}}
+                         :actual      {"out" "plain"}}]}}
+           (check h)))))
