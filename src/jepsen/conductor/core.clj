@@ -27,7 +27,9 @@
   cleanly extensible to a problem. If you're here in the future and trying to
   debug this, my apologies."
   (:refer-clojure :exclude [run!])
-  (:require [clj-commons.slingshot :refer [try+ throw+]]
+  (:require [bifurcan-clj [core :as b]
+                          [map :as bm]]
+            [clj-commons.slingshot :refer [try+ throw+]]
             [clojure [datafy :refer [datafy]]
                      [edn :as edn]
                      [pprint :refer [pprint]]
@@ -79,16 +81,27 @@
     (bound-fn handle [req]
       (let [body  (:body req)
             _     (assert (instance? InputStream body))
+            ; We use this promise to make our writes synchronous.
+            done  (promise)
             op    (-> body
                       io/reader
                       (PushbackReader.)
                       edn/read
                       validate-op
                       h/op
-                      (assoc :time (util/relative-time-nanos)))]
+                      (assoc :time (util/relative-time-nanos)
+                             :done done))]
         (log-op op)
         (store.format/append-to-big-vector-block!
-          history-writer op)))
+          history-writer op)
+        (let [res @done]
+          (if (= :ok res)
+            {:status 200
+             :headers {"Content-Type" "application/edn"}
+             :body "nil"}
+            {:status 503
+             :headers {"Content-Type" "application/edn"}
+             :body (pr-str res)}))))
     {:port history-port}))
 
 (defn big-vector-block-writer-worker!
@@ -98,6 +111,10 @@
   (try
     (loop [; Next op index
            index 0
+           ; We use this map to ensure processes never double-invoke, since we
+           ; can't necessarily trust the external services to send us valid
+           ; messages.
+           busy-processes (b/linear bm/empty)
            ; Number of elements written to completed blocks. We use
            ; this for the initial block index of each streaming
            ; block.
@@ -123,11 +140,40 @@
                                          chunks)
                 (store.format/write-block-index! handle)))
           ; Write element
+          (let [process         (:process element)
+                done            (:done element)
+                element         (if done
+                                  (dissoc element :done)
+                                  element)
+                busy-processes'
+                (if done
+                  (case (:type element)
+                    :invoke (if (bm/get busy-processes process)
+                              (do (deliver done :busy-process-invoked)
+                                  (throw+ {:type :busy-process-invoked
+                                           :op element}))
+                              (bm/put busy-processes process true))
+
+                    (:ok, :fail) (if (bm/get busy-processes process)
+                                   (bm/put busy-processes process false)
+                                   (do (deliver done :free-process-completed)
+                                       (throw+ {:type :free-process-completed
+                                                :op element})))
+
+                    :info (if (bm/get busy-processes process)
+                            busy-processes
+                            (do (deliver done :free-process-completed)
+                                (throw+ {:type :free-process-completed
+                                         :op element}))))
+                  ; Jepsen's internal processes can be trusted
+                  busy-processes)]
           (if (< uncompleted-count elements-per-chunk)
             ; Room in this chunk
             (do (store.format/append-to-fressian-stream-block!
                   chunk-writer (assoc element :index index))
+                (when done (deliver done :ok))
                 (recur (inc index)
+                       busy-processes'
                        completed-count
                        (inc uncompleted-count)
                        chunks
@@ -146,7 +192,13 @@
                                   handle)]
                     (store.format/append-to-fressian-stream-block!
                       writer' (assoc element :index index))
-                    (recur (inc index) completed-count 1 chunks writer'))))))))
+                    (when done (deliver done :ok))
+                    (recur (inc index)
+                           busy-processes'
+                           completed-count
+                           1
+                           chunks
+                           writer')))))))))
     (catch Throwable t
       (warn t "Big vector block writer crashed!")
       (throw t))))

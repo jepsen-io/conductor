@@ -3,7 +3,7 @@
   :url "https://github.com/jepsen-io/conductor"
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
             :url "https://www.eclipse.org/legal/epl-2.0/"}
-  :dependencies [[http-kit "2.9.0-beta3"]
+  :dependencies [[clj-http "3.13.1"]
                  [io.jepsen/generator "0.1.2-SNAPSHOT"]
                  [org.clojure/clojure "1.11.1"]
                  [org.clojure/tools.logging "1.3.1"]
