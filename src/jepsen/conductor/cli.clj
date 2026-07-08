@@ -282,7 +282,7 @@
       :validate [pos? "Must be a positive number."]]
 
      [nil "--recovery-time-limit SECONDS" "How long to wait after the end of fault injection before beginning the final generator."
-      :default 300
+      :default 600
       :parse-fn parse-long
       :validate [(complement neg?) "Must not be negative"]]
 
