@@ -162,8 +162,8 @@
   of change of that size in 1 / ns, and current interval."
   [size size-rate interval]
   (let [nanos       1000000000
-        ; We want a queue of around 100 elements
-        target-size 100
+        ; We want a queue of around 1000 elements
+        target-size 1000
         ; To get there in 10 seconds, we need a size-rate of...
         target-rate (/ (- target-size size) 10000000000)
         ; The current rate that we're adding elements to the queue
