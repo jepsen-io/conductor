@@ -59,6 +59,13 @@
             (assoc op :type :fail, :value nil, :error :nil-workflow-id)
             (assoc op :type :ok, :value id)))
 
+        :running-workflows
+        (assoc op
+               :type :ok
+               :value (c/get-running-workflows workflow-client
+                                               "greetings"
+                                               1))
+
         :check-workflow
         (assoc op
                :type :ok
@@ -103,6 +110,18 @@
                                                    :pending pending')
                                    event)]
           (TrackWorkflowGen. gen' completed pending'))
+
+        :running-workflows
+        (let [completed' (->> (:value event)
+                              (reduce bs/remove completed))
+              pending' (->> (:value event)
+                            (reduce bs/add (b/linear pending))
+                            b/forked)
+              gen' (gen/update gen test (assoc ctx
+                                               :pending completed'
+                                               :pending pending')
+                               event)]
+          (TrackWorkflowGen. gen' completed' pending'))
 
         :check-workflow
         (let [{:keys [id status]} (:value event)]
@@ -316,6 +335,11 @@
          ; We want a steady stream of queue-size requests to inform the
          ; backpressure system of what's going on
          queue-size-gen
+         ; Occasionally ask for all running workflows; no more often than once
+         ; per second.
+         (let [rate (min 1 (/ rate 128))]
+           (gen/stagger (/ rate)
+                        (gen/repeat {:f :running-workflows})))
          ; Occasionally check on a workflow we think is completed, just in case
          ; it vanishes
          (gen/stagger (/ 32 rate)
@@ -528,22 +552,27 @@
     :concurrent-execution})
 
 (defn checker-results
-  "Takes a map of error types to sequences of errors, and produces a checker
-  results map for it."
-  [errors]
+  "Takes a test and a map of error types to sequences of errors, and produces a
+  checker results map for it."
+  [test errors]
   (let [error-types (->> errors
                          (filter (comp seq val))
                          (map key)
-                         sort)]
+                         sort)
+        bad-types (into (sorted-set)
+                        (if-let [t (:target-error-types test)]
+                          (filter t error-types)
+                          (remove normal-errors error-types)))
+        normal-types (->> error-types
+                          (remove bad-types)
+                          (into (sorted-set)))]
     (reduce (fn [res type]
               (let [errors (get errors type)]
                 (assoc res type {:count    (count errors)
                                  :examples (take 16 errors)})))
-            {:valid?       (not (seq (remove normal-errors error-types)))
-             :normal-types (into (sorted-set)
-                                 (filter normal-errors error-types))
-             :error-types  (into (sorted-set)
-                                 (remove normal-errors error-types))}
+            {:valid?       (not (seq bad-types))
+             :normal-types normal-types
+             :error-types  bad-types}
             error-types)))
 
 (defrecord CompletionChecker []
@@ -575,6 +604,7 @@
                              [])]
       (assoc
         (checker-results
+          test
           (merge-with into @workflow-errors
                       {:abandoned            abandoned-errors
                        :backend-error        @backend-errors

@@ -396,8 +396,9 @@
                   (when (and op' (h/ok? op'))
                     (:value op'))
 
-                  :queue-size
-                  nil)]
+                  (:running-workflows :queue-size)
+                  nil
+                  )]
     (assert (string? id)
             (str "Extracted non-string workflow ID from\n"
                  (pr-str op) "\n"
@@ -418,7 +419,7 @@
     :start-workflow
     (:input (:value op))
 
-    :queue-size
+    (:running-workflows :queue-size)
     nil))
 
 (defn apply-mystery-start-workflows

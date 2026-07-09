@@ -178,6 +178,12 @@
             :status :not-found}
            (throw e)))))
 
+(defn get-running-workflows
+  "Asks a WorkflowClient to retrieve all running workflow instances for a given
+  workflow name and version. Returns a vector of workflow IDs."
+  [^WorkflowClient client name version]
+  (vec (.getRunningWorkflow client name (int version))))
+
 (defn get-all-poll-data
   "Gets the last poll data for all task types."
   [^TaskClient task-client]
@@ -205,6 +211,9 @@
               ; Huh.
               #"BACKEND_ERROR"
               (assoc ~op :type :info, :error [:backend-error m#])
+
+              #"Cannot assign requested address"
+              (assoc ~op :type :fail, :error :cannot-assign-requested-address)
 
               #"Connect timed out"
               (assoc ~op :type :fail, :error :connect-timed-out)

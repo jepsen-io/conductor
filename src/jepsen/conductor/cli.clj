@@ -296,6 +296,9 @@
       :parse-fn parse-long
       :validate [pos? "Must be positive"]]
 
+     [nil "--target-error-types TYPES" "Hunts for any of a comma-separated list of error types from `workload.workflow/completion-checker`, e.g. `incomplete,task-never-executed`. Other errors are reported, but do not contribute to a failing result."
+      :parse-fn (comp set parse-comma-kws)]
+
      [nil "--time-limit SECONDS"
       "Excluding setup and teardown, how long should a test run for, in seconds?"
       :default  300
