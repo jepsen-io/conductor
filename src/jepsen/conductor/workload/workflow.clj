@@ -4,15 +4,20 @@
   (:require [bifurcan-clj [core :as b]
                           [map :as bm]
                           [set :as bs]]
+            [cheshire.core :as json]
+            [clj-http.client :as http]
+            [clojure [pprint :refer [pprint]]
+                     [walk :as walk]]
+            [clojure.java.io :as io]
             [clojure.tools.logging :refer [info warn]]
-            [clojure [pprint :refer [pprint]]]
             [dom-top.core :refer [loopr with-retry]]
             [jepsen [checker :as checker]
                     [client :as client]
                     [generator :as gen]
                     [history :as h]
                     [random :as rand]
-                    [role :as role]]
+                    [role :as role]
+                    [store :as store]]
             [jepsen.conductor.client :as c]
             [jepsen.conductor.checker.workflow :as checker.workflow]
             [jepsen.history.fold :refer [loopf]]
@@ -575,6 +580,42 @@
              :error-types  bad-types}
             error-types)))
 
+(defn find-workflow-ids
+  "Takes a structure and walks it looking for :workflow-id keys. Returns a set
+  of those ids."
+  [x]
+  (let [found (volatile! (transient #{}))]
+    (walk/postwalk (fn hunt [x]
+                     (when (and (instance? clojure.lang.MapEntry x)
+                                (identical? :workflow-id (key x)))
+                       (vswap! found conj! (val x)))
+                     x)
+                   x)
+    (persistent! @found)))
+
+(defn snarf-workflow-json!
+  "Downloads the JSON for a single workflow."
+  [test id]
+  (info "Snarfing workflow" id)
+  (with-open [w (io/writer (store/path! test "workflows" (str id ".json")))]
+    (let [node (-> test :roles :server rand/nth)
+          url  (str "http://" node ":8080/api/workflow/" id
+                    "?includeTasks=true")
+          res (http/get url {:as :stream})
+          json (json/parse-stream (io/reader (:body res)))]
+      (json/generate-stream json w {:pretty true}))))
+
+(defn snarf-workflows-json!
+  "When investigating a test failure, it's helpful to have the raw JSON for
+  affected workflows. This takes a map of keys to (maybe) error maps like
+  {:count 2, :examples [{:type ...}]}, scans those examples for :workflow-ids,
+  grabs their JSON representations from the API, and writes each to a file in
+  `store/.../workflows/<id>.json`."
+  [test error-maps]
+  (->> (find-workflow-ids error-maps)
+       (pmap (partial snarf-workflow-json! test))
+       dorun))
+
 (defrecord CompletionChecker []
   checker/Checker
   (check [this test history opts]
@@ -601,20 +642,24 @@
                              [{:type :abandoned
                                :last-queue-size @last-queue-size
                                :incomplete-count (count @incomplete-errors)}]
-                             [])]
-      (assoc
-        (checker-results
-          test
-          (merge-with into @workflow-errors
-                      {:abandoned            abandoned-errors
-                       :backend-error        @backend-errors
-                       :concurrent-execution @concurrent-execution-errors
-                       :incomplete           @incomplete-errors
-                       :incompatible-status  @incompatible-status-errors
-                       :nil-workflow-id      @nil-workflow-id-errors}))
-        :last-queue-size     @last-queue-size
-        :started-count       (count @started-workflows)
-        :final-status-counts @final-status-counts))))
+                             [])
+          res
+          (assoc
+            (checker-results
+              test
+              (merge-with into @workflow-errors
+                          {:abandoned            abandoned-errors
+                           :backend-error        @backend-errors
+                           :concurrent-execution @concurrent-execution-errors
+                           :incomplete           @incomplete-errors
+                           :incompatible-status  @incompatible-status-errors
+                           :nil-workflow-id      @nil-workflow-id-errors}))
+            :last-queue-size     @last-queue-size
+            :started-count       (count @started-workflows)
+            :final-status-counts @final-status-counts)]
+      ; As a side effect, grab JSON for any workflows we mention.
+      (snarf-workflows-json! test res)
+      res)))
 
 (defn completion-checker
   "This checker detects several types of errors
@@ -644,7 +689,7 @@
       :incompatible-status  A workflow execution had a status we did not
                             expect.
 
-      :nil-workflow-id      A create-workflow request returned nil, instead of
+      :nil-workflow-id      A start-workflow request returned nil, instead of
                             an ID string.
 
       :task-never-executed  A workflow was started but no worker was ever asked
