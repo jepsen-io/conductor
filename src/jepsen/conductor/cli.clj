@@ -70,13 +70,42 @@
     :clock-worker
     })
 
+(def specific-nemeses
+  "Nemeses scoped to a specific role."
+  #{:kill-postgres
+    :kill-redis
+    :kill-server
+    :kill-std-worker
+    :kill-worker
+    :partition-server
+    :partition-server-postgres
+    :partition-server-redis
+    :partition-server-std-worker
+    :partition-server-worker
+    :pause-postgres
+    :pause-redis
+    :pause-server
+    :pause-std-worker
+    :pause-worker})
+
 (def standard-nemeses
   "Combinations of nemeses we run by default."
   (vec
     (concat ; Nothing
             [[]]
-            ; Each of the single nemeses above
-            (->> nemeses sort (map vector))
+            ; Two single faults
+            (for [a specific-nemeses
+                  b specific-nemeses
+                  :when (not= a b)]
+              [a b])
+            ; Three single faults
+            (for [a specific-nemeses
+                  b specific-nemeses
+                  c specific-nemeses
+                  :when (distinct? a b c)]
+              [a b c])
+            ; Single faults
+            (sort specific-nemeses)
             ; General chaos
             [[:partition :pause :kill :packet :clock]])))
 
