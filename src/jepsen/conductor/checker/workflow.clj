@@ -5,12 +5,17 @@
                           [map :as bm]
                           [set :as bs]]
             [clojure [datafy :refer [datafy]]
-                     [pprint :refer [pprint]]]
+                     [pprint :refer [pprint]]
+                     [walk :as walk]]
+            [clojure.java.io :as io]
             [clojure.tools.logging :refer [info warn]]
             [dom-top.core :refer [loopr]]
-            [jepsen.history :as h]
+            [jepsen [checker :as checker]
+                    [history :as h]
+                    [store :as store]]
             [jepsen.history.fold :refer [loopf]]
-            [potemkin :refer [definterface+]])
+            [potemkin :refer [definterface+]]
+            [tesser.core :as t])
   (:import (jepsen.history Op)))
 
 (defn earliest-index
@@ -539,8 +544,320 @@
                    ; And return errors grouped by type.
                    (group-by :type errors))))))
 
-(defn errors
-  "Starts a task that checks a history for errors."
+(defn workflow-errors
+  "Starts a task that checks a history for errors in individual workflows."
   [history]
   (h/task history workflow-errors []
           (h/fold history (check-fold history))))
+
+(defn nil-workflow-id-errors
+  "Starts a task which finds a vector of error maps where a create-workflow
+  request returned a nil workflow ID."
+  [history]
+  (h/task history nil-workflow-id []
+          (->> (t/filter (comp #{:nil-workflow-id} :error))
+               (t/map (fn [op']
+                        {:type :nil-workflow-id
+                         :op  (h/invocation history op')
+                         :op' op'}))
+               (t/into [])
+               (h/tesser history))))
+
+(defn concurrent-execution-errors
+  "Starts a task which finds a vector of error maps wherever two processes
+  executed the same task in the same workflow instance at the same time, and we
+  received a completion.
+
+  I expect this to fail; it's theoretically impossible to guarantee mutual
+  exclusion. But the locks and leaase systems might make it rare!"
+  [history]
+  (let [fold
+        (loopf {:name "concurrent-execution-errors"}
+               ; Build up a map of [workflow task] -> #{[invoke-idx,
+               ; complete-idx] ...}
+               ([runs (b/linear bm/empty)]
+                [op]
+                (recur
+                  (if (and (h/invoke? op)
+                           (identical? :execute (:f op)))
+                    (if-let [op' (h/completion history op)]
+                      (let [value (:value op)
+                            k [(:workflow-instance-id value)
+                               (:reference-task-name value)]
+                            task-runs (bm/get runs k [])]
+                        (bm/put runs k (conj task-runs [(:index op)
+                                                        (:index op')])))
+                      runs)
+                    runs))
+                (b/linear runs))
+               ; Merge those together
+               ([runs bm/empty]
+                [runs']
+                (recur (bm/merge runs runs' into))))]
+    (h/task history concurrent-execution-errors []
+            (let [runs (h/fold history fold)]
+              (->> (bm/values runs)
+                   (keep (fn [intervals]
+                           ; Look for an intersection
+                           (loopr [a  -2
+                                   a' -1]
+                                  [[b b'] (sort intervals)]
+                                  (let [b (long b)
+                                        b' (long b')]
+                                    (if (< b a') 
+                                      ; Concurrent!
+                                      {:type :concurrent-execution
+                                       :ops  (mapv (partial h/get-index history)
+                                                   (sort [a a' b b']))} 
+                                      (recur b b')))
+                                  nil)))
+                   vec)))))
+
+(def boring-backend-errors
+  "Backend errors that sound like they might not be worth surfacing"
+  [#"Connection is closed"])
+
+(defn backend-errors
+  "Takes a history. Starts a task which hunts for `:backend-error` errors,
+  converting them to error maps."
+  [history]
+  (h/task history backend-errors []
+          (->> (t/filter (fn [op]
+                           (when-let [e (:error op)]
+                             (when (vector? e)
+                               (let [[type msg] e]
+                                 (and (= :backend-error type)
+                                      (not-any? #(re-find % msg)
+                                                boring-backend-errors)))))))
+               (t/map (fn [op']
+                        {:type :backend-error
+                         :op   (h/invocation history op')
+                         :op'  op'}))
+               (t/into [])
+               (h/tesser history))))
+
+(defn started-workflows
+  "Takes a history and starts a task which returns the set of all acknowledged
+  started workflow IDs."
+  [history]
+  (h/task history started-workflows []
+          (->> (t/filter (h/has-f? :start-workflow))
+               (t/filter h/ok?)
+               (t/map :value)
+               (t/set)
+               (h/tesser history))))
+
+(defn workflow-statuses
+  "Takes a history and starts a task which returns a map of workflow ID to a
+  vector of the statuses it took on, in OK order."
+  [history]
+  (h/task history workflow-statuses []
+          (->> (t/filter (h/has-f? :check-workflow))
+               (t/filter h/ok?)
+               (t/map :value)
+               (t/group-by :id)
+               (t/map :status)
+               (t/into [])
+               (h/tesser history))))
+
+
+(defn workflow-outputs
+  "Takes a history and launches a task which returns a map of workflow ID to
+  the set of all outputs it produced once completed."
+  [history]
+  (h/task history workflow-outputs []
+          (->> (t/filter (h/has-f? :check-workflow))
+               (t/filter h/ok?)
+               (t/map :value)
+               (t/group-by :id)
+               (t/filter (comp #{:completed} :status))
+               (t/map :output)
+               t/set
+               (h/tesser history))))
+
+(defn last-queue-size
+  "Takes a history and starts a task which returns the last successful
+  :queue-size value."
+  [history]
+  (h/task history last-queue-size []
+          (->> (t/filter (h/has-f? :queue-size))
+               (t/filter h/ok?)
+               (t/extremum (fn [a b] (compare (:index a) (:index b))))
+               (t/post-combine :value)
+               (h/tesser history))))
+
+(defn incompatible-status-errors
+  "Takes a history and a task for a map of workflow IDs to vectors of statuses.
+  Starts a task which returns a collection of error maps for any workflow which
+  had statuses other than :running and :complete. Later, if we add
+  pauses/termination, we might relax this--I'm just trying to get a feel for
+  things right now."
+  [history statuses]
+  (h/task history incompatible-status-errors [statuses statuses]
+          (->> statuses
+               (keep (fn [[id statuses]]
+                       (when (not-every? #{:running :completed} statuses)
+                         {:type :incompatible-status
+                          :id   id
+                          :statuses statuses})))
+               vec)))
+
+(defn incomplete-errors
+  "Starts a task which depends on tasks for a set of started workflow IDs and a
+  map of workflow IDs to vectors of statuses. Returns a collection of error
+  maps for any workflow ID which did not have final status :complete."
+  [history started statuses]
+  (h/task history incomplete-errors [started started, statuses statuses]
+          (->> started
+               (keep (fn [id]
+                       (when-not (= :completed (peek (statuses id)))
+                         {:type     :incomplete
+                          :id       id
+                          :statuses (statuses id)}))))))
+
+(defn final-status-counts
+  "Takes a history and a task for a map of workflow ID to vectors of statuses.
+  Starts a task which returns a frequency map of the final status for each
+  workflow ID."
+  [history statuses]
+  (h/task history final-status-count [statuses statuses]
+          (->> (vals statuses)
+               (map peek)
+               frequencies)))
+
+(def normal-errors
+  "These error types are considered normal; while we include them in the
+  output, they don't cause us to return `:valid? false`."
+  #{; Concurrent execution is normal; now that we've demonstrated it in healthy
+    ; clusters, no need to hunt for it any more.
+    :concurrent-execution})
+
+(defn checker-results
+  "Takes a test and a map of error types to sequences of errors, and produces a
+  checker results map for it."
+  [test errors]
+  (let [error-types (->> errors
+                         (filter (comp seq val))
+                         (map key)
+                         sort)
+        bad-types (into (sorted-set)
+                        (if-let [t (:target-error-types test)]
+                          (filter t error-types)
+                          (remove normal-errors error-types)))
+        normal-types (->> error-types
+                          (remove bad-types)
+                          (into (sorted-set)))]
+    (reduce (fn [res type]
+              (let [errors (get errors type)]
+                (assoc res type {:count    (count errors)
+                                 :examples (take 16 errors)})))
+            {:valid?       (not (seq bad-types))
+             :normal-types normal-types
+             :error-types  bad-types}
+            error-types)))
+
+(defn find-workflow-ids
+  "Takes a structure and walks it looking for :workflow-id keys. Returns a set
+  of those ids."
+  [x]
+  (let [found (volatile! (transient #{}))]
+    (walk/postwalk (fn hunt [x]
+                     (when (and (instance? clojure.lang.MapEntry x)
+                                (identical? :workflow-id (key x)))
+                       (vswap! found conj! (val x)))
+                     x)
+                   x)
+    (persistent! @found)))
+
+(defn trim-workflows-json!
+  "We download every workflow JSON by default, since we don't know what will be
+  interesting until the analysis completes, and by then the DB is gone. This
+  takes a structure with :workflow-id \"...\" pairs in it, and deletes any
+  *other* workflow/<id>.json files."
+  [test results]
+  (let [interesting (find-workflow-ids results)]
+    (doseq [file (file-seq (store/path test "workflows"))]
+      (when-let [[_ id] (re-find #"^(.+)\.json$" (.getName file))]
+        (when-not (contains? interesting id)
+          (.delete file))))))
+
+(defrecord Checker []
+  checker/Checker
+  (check [this test history opts]
+    (h/ensure-pair-index history)
+    (let [backend-errors              (backend-errors history)
+          concurrent-execution-errors (concurrent-execution-errors history)
+          nil-workflow-id-errors      (nil-workflow-id-errors history)
+          started-workflows           (started-workflows history)
+          workflow-statuses           (workflow-statuses history)
+          last-queue-size             (last-queue-size history)
+          workflow-outputs            (workflow-outputs history)
+          incomplete-errors           (incomplete-errors
+                                        history
+                                        started-workflows
+                                        workflow-statuses)
+          incompatible-status-errors  (incompatible-status-errors
+                                        history workflow-statuses)
+          final-status-counts         (final-status-counts
+                                        history workflow-statuses)
+          workflow-errors             (workflow-errors history)
+          abandoned-errors (if (and @last-queue-size
+                                    (< @last-queue-size
+                                       (count @incomplete-errors)))
+                             [{:type :abandoned
+                               :last-queue-size @last-queue-size
+                               :incomplete-count (count @incomplete-errors)}]
+                             [])
+          res
+          (assoc
+            (checker-results
+              test
+              (merge-with into @workflow-errors
+                          {:abandoned            abandoned-errors
+                           :backend-error        @backend-errors
+                           :concurrent-execution @concurrent-execution-errors
+                           :incomplete           @incomplete-errors
+                           :incompatible-status  @incompatible-status-errors
+                           :nil-workflow-id      @nil-workflow-id-errors}))
+            :last-queue-size     @last-queue-size
+            :started-count       (count @started-workflows)
+            :final-status-counts @final-status-counts)]
+      ; As a side effect, trim unneeded JSON workflow files.
+      (trim-workflows-json! test res)
+      res)))
+
+(defn checker
+  "This checker detects several types of errors
+
+      :abandoned            The final length of the decider queue was shorter
+                            than the number of incomplete workflows.
+
+      :backend-error        Some operation threw a backend error.
+
+      :concurrent-execution For a single workflow instance and task reference
+                            name, two workers executed that task concurrently.
+
+      :different-task-input       A single task had two different inputs
+
+      :different-workflow-input   A workflow execution had two different
+                                  inputs.
+
+      :different-workflow-output    A workflow execution had two different
+                                    outputs in the completed state.
+
+      :impossible-output    A workflow produced an output that was consistent
+                            with none of its task executions.
+
+      :incomplete           A started workflow execution was not complete at
+                            the end of the test.
+
+      :incompatible-status  A workflow execution had a status we did not
+                            expect.
+
+      :nil-workflow-id      A start-workflow request returned nil, instead of
+                            an ID string.
+
+      :task-never-executed  A workflow was started but no worker was ever asked
+                            to execute some task for it."
+  []
+  (Checker.))

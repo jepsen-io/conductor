@@ -21,14 +21,14 @@
                               [db :as db]
                               [nemesis :as nemesis]]
             [jepsen.conductor.checker.plots :as plots]
-            [jepsen.conductor.workload [workflow :as workflow]]
+            [jepsen.conductor.workload :as workload]
             [jepsen.os.debian :as debian]))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
   workload maps"
   {:none                 (constantly tests/noop-test)
-   :workflow             workflow/workload})
+   :workflow             workload/workload})
 
 (def standard-workloads
   "All the workloads we run by default."
