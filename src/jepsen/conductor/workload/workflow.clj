@@ -24,6 +24,18 @@
             [tesser.core :as t])
   (:import (com.netflix.conductor.client.exception ConductorClientException)))
 
+(defn snarf-workflow-json!
+  "Downloads the JSON for a single workflow."
+  [test id]
+  (info "Snarfing workflow" id)
+  (with-open [w (io/writer (store/path! test "workflows" (str id ".json")))]
+    (let [node (-> test :roles :server rand/nth)
+          url  (str "http://" node ":8080/api/workflow/" id
+                    "?includeTasks=true")
+          res (http/get url {:as :stream})
+          json (json/parse-stream (io/reader (:body res)))]
+      (json/generate-stream json w {:pretty true}))))
+
 (defrecord Client [api-client task-client workflow-client workflow-executor]
   client/Client
   (open! [this test node]
@@ -75,6 +87,10 @@
         (assoc op
                :type :ok
                :value (c/get-workflow workflow-client (:value op)))
+
+        :snarf-workflow
+        (do (snarf-workflow-json! test (:value op))
+            (assoc op :type :ok, :value nil))
 
         ; We use _deciderQueue as a proxy for overall system backlog
         :queue-size
@@ -309,8 +325,9 @@
   (op [this test ctx]
     (gen/op
       (->> (bs/union (:completed ctx) (:pending ctx))
-           (map (fn [workflow-id]
-                  {:f :check-workflow, :value workflow-id}))
+           (mapcat (fn [workflow-id]
+                     [{:f :check-workflow, :value workflow-id}
+                      {:f :snarf-workflow, :value workflow-id}]))
            (cons (gen/log (str "Final check of " (b/size (:completed ctx))
                                " completed and " (b/size (:pending ctx))
                                " pending workflows"))))
@@ -320,7 +337,8 @@
     this))
 
 (defn final-check-gen
-  "Emits one check-workflow op for each known workflow."
+  "Emits one check-workflow op and one snarf-workflow op for each known
+  workflow."
   []
   (FinalCheckGen.))
 
@@ -593,28 +611,17 @@
                    x)
     (persistent! @found)))
 
-(defn snarf-workflow-json!
-  "Downloads the JSON for a single workflow."
-  [test id]
-  (info "Snarfing workflow" id)
-  (with-open [w (io/writer (store/path! test "workflows" (str id ".json")))]
-    (let [node (-> test :roles :server rand/nth)
-          url  (str "http://" node ":8080/api/workflow/" id
-                    "?includeTasks=true")
-          res (http/get url {:as :stream})
-          json (json/parse-stream (io/reader (:body res)))]
-      (json/generate-stream json w {:pretty true}))))
-
-(defn snarf-workflows-json!
-  "When investigating a test failure, it's helpful to have the raw JSON for
-  affected workflows. This takes a map of keys to (maybe) error maps like
-  {:count 2, :examples [{:type ...}]}, scans those examples for :workflow-ids,
-  grabs their JSON representations from the API, and writes each to a file in
-  `store/.../workflows/<id>.json`."
-  [test error-maps]
-  (->> (find-workflow-ids error-maps)
-       (pmap (partial snarf-workflow-json! test))
-       dorun))
+(defn trim-workflows-json!
+  "We download every workflow JSON by default, since we don't know what will be
+  interesting until the analysis completes, and by then the DB is gone. This
+  takes a structure with :workflow-id \"...\" pairs in it, and deletes any
+  *other* workflow/<id>.json files."
+  [test results]
+  (let [interesting (find-workflow-ids results)]
+    (doseq [file (file-seq (store/path test "workflows"))]
+      (when-let [[_ id] (re-find #"^(.+)\.json$" (.getName file))]
+        (when-not (contains? interesting id)
+          (.delete file))))))
 
 (defrecord CompletionChecker []
   checker/Checker
@@ -657,8 +664,8 @@
             :last-queue-size     @last-queue-size
             :started-count       (count @started-workflows)
             :final-status-counts @final-status-counts)]
-      ; As a side effect, grab JSON for any workflows we mention.
-      (snarf-workflows-json! test res)
+      ; As a side effect, trim unneeded JSON workflow files.
+      (trim-workflows-json! test res)
       res)))
 
 (defn completion-checker

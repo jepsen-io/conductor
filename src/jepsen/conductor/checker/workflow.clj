@@ -396,7 +396,6 @@
                   (when (and op' (h/ok? op'))
                     (:value op'))
 
-                  (:running-workflows :queue-size)
                   nil
                   )]
     (assert (string? id)
@@ -419,7 +418,6 @@
     :start-workflow
     (:input (:value op))
 
-    (:running-workflows :queue-size)
     nil))
 
 (defn apply-mystery-start-workflows
