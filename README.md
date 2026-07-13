@@ -2,19 +2,37 @@
 
 A test suite for [Orkes Conductor](https://orkes.io/content).
 
+## Quickstart
+
+You'll need a [Jepsen
+environment](https://github.com/jepsen-io/jepsen#setting-up-a-jepsen-environment).
+We recommend at least eight nodes: one for Postgres, one for Redis, and two each
+for the server, worker, and standard worker. This test uses a lot of disk
+space---try 48 GB for each DB node, and 128 GB for the control node.
+
+You will also need a directory for the Orkes Conductor build you'd like to
+test. This directory should have a subdirectory, `lib`, which has two files:
+`server.jar` and `worker.jar`, for the Orkes server and standard worker,
+respectively. You'll pass this directory as `--version <dir>` when running the
+test. For instance, you might have:
+
+```
+versions/5.3.2/lib/server.jar
+versions/5.3.2/lib/worker.jar
+```
+
+If you've set up an AWS Marketplace Cloudformation cluster, you can run:
+
+```
+lein run test --username admin --nodes-file ~/nodes --time-limit 5 --version
+versions/5.3.2
+```
+
 ## What's Here?
 
 We install Postgres as a DB on the first node, Redis as a queue on the second,
 and divide remaining nodes evenly between Conductor servers and workers.
 Workers are built from the `worker/` project.
-
-## Usage
-
-You'll need a [Jepsen environment](https://github.com/jepsen-io/jepsen#setting-up-a-jepsen-environment).
-
-```
-lein run test-all
-```
 
 ## License
 
