@@ -93,10 +93,10 @@
   "Installs the worker."
   [test node]
   (debian/install [:openjdk-25-jdk-headless])
-  (c/su (c/exec :mkdir :-p dir))
-        (info "Uploading worker")
+  (c/su (c/exec :mkdir :-p dir)
+        (info "Uploading worker" (pr-str (c/cmd-context)))
         (c/upload (worker-jar!) jar-file)
-        (info "Uploaded worker"))
+        (info "Uploaded worker")))
 
 (defrecord DB []
   db/DB
@@ -130,7 +130,7 @@
             jar-file)))
 
   (kill! [this test node]
-     (c/su (cu/stop-daemon! "java" pid-file)))
+    (c/su (cu/stop-daemon! "java" pid-file)))
 
   db/Pause
   (pause! [this test node]
