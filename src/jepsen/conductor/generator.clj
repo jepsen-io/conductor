@@ -12,36 +12,59 @@
                     [random :as rand]
                     [role :as role]]))
 
+; This looks a little weird--for TrackWorkflowGen I want to generate nice clean
+; jump tables using `case, but that creates a lot of code duplication between
+; branches. I could unify it with a fn or delay, but that involves extra work
+; I'd rather skip in a hot loop. Instead, we use a few anaphoric macros and
+; some small let bindings to remove duplication.
+
+(defmacro twg-ctx
+  "Shorthand for (assoc ctx :completed completed :pending pending)"
+  []
+  `(assoc ~'ctx :completed ~'completed :pending ~'pending))
+
+(defmacro twg-gen
+  "Shorthand for (gen/update gen test (twg-ctx) event)"
+  []
+  `(gen/update ~'gen ~'test (twg-ctx) ~'event))
+
+(defmacro twg'
+  "Shorthand for (TrackWorkflowGen. (twg-gen') completed pending)"
+  []
+  `(TrackWorkflowGen. (twg-gen) ~'completed ~'pending))
+
 (defrecord TrackWorkflowGen [gen completed pending]
   gen/Generator
   (op [this test ctx]
-    (when-let [[op gen'] (gen/op gen test (assoc ctx
-                                                 :completed completed
-                                                 :pending pending))]
+    (when-let [[op gen'] (gen/op gen test (twg-ctx))]
       [op (TrackWorkflowGen. gen' completed pending)]))
 
   (update [this test ctx event]
-    (if (= :ok (:type event))
+    (case (:type event)
+      :invoke
+      (case (:f event)
+        :execute
+        (if-let [workflow-id (:workflow-instance-id (:value event))]
+          (let [pending (bs/add pending workflow-id)]
+            (twg'))
+          ; No workflow ID
+          (twg'))
+        ; Some other :f
+        (twg'))
+
+      :ok
       (case (:f event)
         :start-workflow
-        (let [pending' (bs/add pending (:value event))
-              gen'     (gen/update gen test (assoc ctx
-                                                   :completed completed
-                                                   :pending pending')
-                                   event)]
-          (TrackWorkflowGen. gen' completed pending'))
+        (let [pending (bs/add pending (:value event))]
+          (twg'))
 
         :running-workflows
-        (let [completed' (->> (:value event)
-                              (reduce bs/remove completed))
-              pending' (->> (:value event)
+        (let [completed (->> (:value event)
+                             (reduce bs/remove completed))
+              pending (->> (:value event)
                             (reduce bs/add (b/linear pending))
-                            b/forked)
-              gen' (gen/update gen test (assoc ctx
-                                               :pending completed'
-                                               :pending pending')
-                               event)]
-          (TrackWorkflowGen. gen' completed' pending'))
+                            b/forked)]
+          (twg'))
 
         :check-workflow
         (let [{:keys [id status]} (:value event)]
@@ -49,35 +72,20 @@
             ; In these cases, we assume it's done and don't need to look any
             ; more
             (:completed :failed :timed-out :terminated)
-            (let [pending'   (bs/remove pending id)
-                  completed' (bs/add completed id)
-                  gen'       (gen/update gen test (assoc ctx
-                                                         :completed completed'
-                                                         :pending pending')
-                                         event)]
-              (TrackWorkflowGen. gen' completed' pending'))
+            (let [pending   (bs/remove pending id)
+                  completed (bs/add completed id)]
+              (twg'))
 
             ; Otherwise, it's pending
-            (let [pending'   (bs/add pending id)
-                  completed' (bs/remove completed id)
-                  gen'       (gen/update gen test (assoc ctx
-                                                         :completed completed'
-                                                         :pending pending')
-                                         event)]
-              (TrackWorkflowGen. gen' completed' pending'))))
+            (let [pending    (bs/add pending id)
+                  completed  (bs/remove completed id)]
+              (twg'))))
 
         ; We don't care about this f
-        (TrackWorkflowGen. (gen/update gen test (assoc ctx
-                                                       :completed completed
-                                                       :pending pending)
-                                       event)
-                           completed pending))
-      ; Not an OK op
-      (TrackWorkflowGen. (gen/update gen test (assoc ctx
-                                                     :completed completed
-                                                     :pending pending)
-                                     event)
-                         completed pending))))
+        (twg'))
+
+      ; Some other type
+      (twg'))))
 
 (defn track-workflow-gen
   "Wraps a generator in one which keeps track of the completed and pending
