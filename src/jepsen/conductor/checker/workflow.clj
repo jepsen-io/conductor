@@ -151,7 +151,11 @@
 
 (defrecord Workflow [; The workflow run id
                      id
-                     ; The index of the start-workflow invocation op
+                     ; The index of the start-workflow invocation.
+                     ^long start-index
+                     ; Did the start op fail?
+                     ^boolean start-failed?
+                     ; The index of the op that told us the input
                      ^long input-index
                      ; The input to the workflow
                      input
@@ -176,16 +180,26 @@
         :invoke
         (if (= -1 input-index)
           (assoc this
+                 :start-index (.index op)
                  :input-index (.index op)
                  :input (:input (.value op)))
           ; The only way we can get here is if we started the same workflow ID
           ; twice!
-          (assoc this
-                 :errors (bs/add errors
-                                 {:type :duplicate-workflow-id
-                                  :workflow-id id
-                                  :op1 (h/get-index history input-index)
-                                  :op2 op})))
+          (let [op1  (h/get-index history start-index)
+                op1' (h/completion history op1)
+                op2' (h/completion history op)]
+            (assoc this
+                   :errors (bs/add errors
+                                   {:type        :duplicate-workflow-id
+                                    :workflow-id id
+                                    :op1         op1
+                                    :op1'        op1'
+                                    :op2         op
+                                    :op2'        op2'}))))
+
+        ; We need this to find G1a
+        :fail (assoc this :start-failed? true)
+
         this)
 
       :check-workflow
@@ -198,8 +212,8 @@
               (identical? ::not-found (:status value))
               this
 
-              ; We haven't seen the input yet; come back later
-              (= -1 input-index)
+              ; We haven't seen the start yet; come back later
+              (= -1 start-index)
               ::pending
 
               ; OK, figure out our inputs and outputs and errors
@@ -217,6 +231,16 @@
                     output-index' (if new-output? (.index op) output-index)
                     output'       (if new-output? (:output value) output)
                     errors (cond-> errors
+                             ; G1a
+                             start-failed?
+                             (bs/add
+                               (let [start (h/get-index history start-index)]
+                                 {:type :g1a
+                                  :workflow-id id
+                                  :start  start
+                                  :start' (h/completion history start)
+                                  :op     op}))
+
                              ; Different input
                              (when-let [i (:input value)]
                                (and (not= -1 input-index)
@@ -243,6 +267,8 @@
                                 :op2         op}))]
                 (Workflow.
                   id
+                  start-index
+                  start-failed?
                   input-index'
                   input'
                   output-index'
@@ -268,9 +294,20 @@
               ref-name  (:reference-task-name value)
               task      (or (bm/get tasks ref-name)
                             (Task. input-index input bs/empty bs/empty))
-              task'     (step task history op)]
-            (assoc this :tasks (bm/put tasks ref-name task'))))
-
+              task'     (step task history op)
+              errors'   (cond-> errors
+                          ; G1a
+                          start-failed?
+                          (bs/add
+                            (let [start (h/get-index history start-index)]
+                              {:type        :g1a
+                               :workflow-id id
+                               :start       start
+                               :start'      (h/completion history start)
+                               :op          op})))]
+            (assoc this
+                   :tasks (bm/put tasks ref-name task')
+                   :errors errors')))
       this))
 
   (flush-1 [this history]
@@ -292,6 +329,22 @@
   (merge [a b history]
     (let [errors'
           (cond-> (bs/union errors (:errors b))
+            ; Different starts!?
+            (and (not= -1 start-index)
+                 (not= -1 (:start-index b))
+                 (not= start-index (:start-index b)))
+            (bs/add
+              (let [op1  (h/get-index history start-index)
+                    op1' (h/completion history op1)
+                    op2  (h/get-index history (:start-index b))
+                    op2' (h/completion history op2)]
+                {:type        :duplicate-workflow-id
+                 :workflow-id id
+                 :op1         op1
+                 :op1'        op1'
+                 :op2         op2
+                 :op2'        op2'}))
+
             ; Different inputs
             (and (not= -1 input-index)
                  (not= -1 (:input-index b))
@@ -318,6 +371,9 @@
                            (fn [a b] (merge a b history)))]
       (flush
         (Workflow. id
+                   (earliest-index start-index (:start-index b))
+                   (by-earliest-index start-index (:start-index b)
+                                      start-failed? (:start-failed? b))
                    (earliest-index input-index    (:input-index b))
                    (by-earliest-index input-index (:input-index b)
                                       input (:input b))
@@ -340,6 +396,17 @@
                                             :task-reference-name (bm/key entry)
                                             :workflow-id id))))))
                (reduce bs/add errors))
+
+          ; Never started
+          errors
+          (if (= -1 start-index)
+            ; Somehow we never started?
+            (bs/add errors
+                    {:type        :never-started
+                     :workflow-id id})
+            errors)
+
+          ; Impossible output or task never executed
           errors
           (if-let [; Right now we only have one task, so its outputs are our
                    ; outputs
@@ -356,13 +423,13 @@
                        :actual       output
                        :op           (h/get-index history output-index)})
               errors)
+            ; Task never executed
+            (bs/add errors
+                    {:type         :task-never-executed
+                     :workflow-id  id}))
 
-          ; No task ever even started executing?
-          (bs/add errors
-                  {:type         :task-never-executed
-                   :workflow-id  id}))
+          ; We still have pending ops--this might be a checker bug?
           errors (if (pos? (b/size pending))
-                   ; We have pending ops still
                    (bs/add errors
                            {:type       :workflow-pending-ops
                             :workflow
@@ -378,6 +445,8 @@
   "Constructs a workflow for the given ID."
   [id]
   (map->Workflow {:id           id
+                  :start-index  -1
+                  :start-failed? false
                   :input-index  -1
                   :input        nil
                   :output-index -1
@@ -444,7 +513,9 @@
                         (workflow id)
                         w)
                    op (bm/value pair)
-                   w' (step+ w history op)]
+                   w' (step+ w history op)
+                   w' (when-let [op' (h/completion history op)]
+                        (step+ w' history op'))]
                (recur (bm/put workflows' id w')
                       (bm/remove input->start-workflow' input)))
              ; Dunno what this was
@@ -845,6 +916,13 @@
       :different-workflow-output    A workflow execution had two different
                                     outputs in the completed state.
 
+      :duplicate-workflow-id  Two create-workflow requests were assigned the
+                              same ID.
+
+      :g1a                  Aborted read. A start-workflow request returned what
+                            looked like a definite failure, but actually
+                            started a workflow.
+
       :impossible-output    A workflow produced an output that was consistent
                             with none of its task executions.
 
@@ -853,6 +931,9 @@
 
       :incompatible-status  A workflow execution had a status we did not
                             expect.
+
+      :never-started        A workflow came into existence with no
+                            corresponding start-workflow request.
 
       :nil-workflow-id      A start-workflow request returned nil, instead of
                             an ID string.

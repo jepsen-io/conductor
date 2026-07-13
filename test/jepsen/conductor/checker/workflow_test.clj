@@ -340,3 +340,59 @@
                          :expected    #{{"out" "star"}}
                          :actual      {"out" "plain"}}]}}
            (check h)))))
+
+(deftest duplicate-workflow-id-test
+  (let [h (h/history
+            [{:process 1, :type :invoke, :f :start-workflow, :value {:input {"in" "red"}}}
+             {:process 1, :type :ok,     :f :start-workflow, :value "w1"}
+             {:process 2, :type :invoke, :f :start-workflow, :value {:input {"in" "blue"}}}
+             {:process 2, :type :ok,     :f :start-workflow, :value "w1"}])]
+    (is (= {:count 1
+            :examples [{:type :duplicate-workflow-id
+                        :workflow-id "w1"
+                        :op1         (h 0)
+                        :op1'        (h 1)
+                        :op2         (h 2)
+                        :op2'        (h 3)}]}
+           (:duplicate-workflow-id (check h))))))
+
+(deftest never-started-test
+  (let [h (h/history
+            [; A read from nothing
+             {:process 2, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 2, :type :ok, :f :check-workflow, :value {:id "w1"
+                                                                 :input {"in" "red"}
+                                                                 :status :running}}])]
+    (is (= {:count 1
+            :examples [{:type         :never-started
+                        :workflow-id  "w1"}]}
+           (:never-started (check h))))))
+
+(deftest g1a-test
+  (let [h (h/history
+            [; Start-workflow fails
+             {:process 1, :type :invoke, :f :start-workflow, :value {:input {"in" "red"}}}
+             {:process 1, :type :fail, :f :start-workflow, :value nil, :error :oh-no}
+             ; But we read it
+             {:process 2, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 2, :type :ok, :f :check-workflow, :value {:id "w1"
+                                                                 :input {"in" "red"}
+                                                                 :status :running}}
+             ; Or executed it
+             {:process 3, :type :invoke, :f :execute, :value {:reference-task-name "t1"
+                                                              :workflow-instance-id "w1"
+                                                              :task-id              "t"
+                                                              :input                {"in" "red"}
+                                                              :output               {"out" "plain"}}}])]
+    (is (= {:count 2
+            :examples [{:type        :g1a
+                        :workflow-id "w1"
+                        :start       (h 0)
+                        :start'      (h 1)
+                        :op          (h 3)}
+                       {:type        :g1a
+                        :workflow-id "w1"
+                        :start       (h 0)
+                        :start'      (h 1)
+                        :op          (h 4)}]}
+           (:g1a (check h))))))
