@@ -36,6 +36,13 @@
         (< i1 i2) v1
         true      v2))
 
+(defn get-index
+  "Like history/get-index, but returns nil for -1. We use primitive longs with
+  -1 as an index sentinel value all over the place, so this is handy."
+  [history ^long index]
+  (when (not= -1 index)
+    (h/get-index history index)))
+
 (definterface+ Model
   (step [model history ^Op op]
         "Applies a single operation to a model, returning a new model.")
@@ -163,6 +170,8 @@
                      ^long output-index
                      ; The output of the workflow
                      output
+                     ; The last observed check-workflow :ok op
+                     ^long last-check-index
                      ; A map of task reference name to Task state
                      tasks
                      ; A set of unapplied operations. We buffer ops here when
@@ -264,7 +273,8 @@
                                 :expected    output
                                 :actual      (:output value)
                                 :op1         (h/get-index history output-index)
-                                :op2         op}))]
+                                :op2         op}))
+                    last-check-index' (max last-check-index (:index op))]
                 (Workflow.
                   id
                   start-index
@@ -273,6 +283,7 @@
                   input'
                   output-index'
                   output'
+                  last-check-index'
                   tasks
                   pending
                   errors))))
@@ -380,6 +391,7 @@
                    (earliest-index output-index    (:output-index b))
                    (by-earliest-index output-index (:output-index b)
                                       output (:output b))
+                   (max last-check-index (:last-check-index b))
                    tasks'
                    (bs/union pending (:pending b))
                    errors')
@@ -404,6 +416,21 @@
             (bs/add errors
                     {:type        :never-started
                      :workflow-id id})
+            errors)
+
+          ; Incomplete
+          errors
+          (if-let [last-check (get-index history last-check-index)]
+            (if (not= :completed (:status (:value last-check)))
+              (let [start  (get-index history start-index)
+                    start' (when start (h/completion history start))]
+                (bs/add errors
+                        {:type        :incomplete
+                         :workflow-id id
+                         :start       start
+                         :start'      start'
+                         :last-check' last-check}))
+              errors)
             errors)
 
           ; Impossible output or task never executed
@@ -451,6 +478,7 @@
                   :input        nil
                   :output-index -1
                   :output       nil
+                  :last-check-index -1
                   :tasks        bm/empty
                   :pending      bs/empty
                   :errors       bs/empty}))
@@ -773,19 +801,6 @@
                           :statuses statuses})))
                vec)))
 
-(defn incomplete-errors
-  "Starts a task which depends on tasks for a set of started workflow IDs and a
-  map of workflow IDs to vectors of statuses. Returns a collection of error
-  maps for any workflow ID which did not have final status :complete."
-  [history started statuses]
-  (h/task history incomplete-errors [started started, statuses statuses]
-          (->> started
-               (keep (fn [id]
-                       (when-not (= :completed (peek (statuses id)))
-                         {:type     :incomplete
-                          :id       id
-                          :statuses (statuses id)}))))))
-
 (defn final-status-counts
   "Takes a history and a task for a map of workflow ID to vectors of statuses.
   Starts a task which returns a frequency map of the final status for each
@@ -863,45 +878,34 @@
           workflow-statuses           (workflow-statuses history)
           last-queue-size             (last-queue-size history)
           workflow-outputs            (workflow-outputs history)
-          incomplete-errors           (incomplete-errors
-                                        history
-                                        started-workflows
-                                        workflow-statuses)
           incompatible-status-errors  (incompatible-status-errors
                                         history workflow-statuses)
           final-status-counts         (final-status-counts
                                         history workflow-statuses)
           workflow-errors             (workflow-errors history)
-          abandoned-errors (if (and @last-queue-size
-                                    (< @last-queue-size
-                                       (count @incomplete-errors)))
-                             [{:type :abandoned
-                               :last-queue-size @last-queue-size
-                               :incomplete-count (count @incomplete-errors)}]
-                             [])
           res
           (assoc
             (checker-results
               test
               (merge-with into @workflow-errors
-                          {:abandoned            abandoned-errors
-                           :backend-error        @backend-errors
+                          {:backend-error        @backend-errors
                            :concurrent-execution @concurrent-execution-errors
-                           :incomplete           @incomplete-errors
                            :incompatible-status  @incompatible-status-errors
                            :nil-workflow-id      @nil-workflow-id-errors}))
             :last-queue-size     @last-queue-size
             :started-count       (count @started-workflows)
-            :final-status-counts @final-status-counts)]
+            :final-status-counts @final-status-counts)
+
+          ; If the last queue size wasn't zero, all bets are off.
+          res (if (and @last-queue-size (pos? @last-queue-size))
+                (assoc res :valid? :unknown)
+                res)]
       ; As a side effect, trim unneeded JSON workflow files.
       (trim-workflows-json! test res)
       res)))
 
 (defn checker
   "This checker detects several types of errors
-
-      :abandoned            The final length of the decider queue was shorter
-                            than the number of incomplete workflows.
 
       :backend-error        Some operation threw a backend error.
 

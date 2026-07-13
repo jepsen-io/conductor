@@ -110,14 +110,8 @@
              ; And confirm the queue only has one element
              {:process 0, :type :invoke, :f :queue-size}
              {:process 0, :type :ok, :f :queue-size, :value 1}])]
-    (is (= {:valid? false,
-            ; Since the final queue size was smaller than the number of pending
-            ; tasks
-            :abandoned {:count 1,
-                        :examples
-                        [{:type :abandoned,
-                          :last-queue-size 1,
-                          :incomplete-count 2}]},
+    (is (= {; Since the last queue size was nonzero
+            :valid? :unknown,
             ; Since we never observed an execute
             :task-never-executed
             {:count 2,
@@ -130,10 +124,18 @@
             :incomplete
             {:count 2,
              :examples
-             [{:type :incomplete, :id "a", :statuses [:running]}
-              {:type :incomplete, :id "b", :statuses [:running]}]},
+             [{:type        :incomplete
+               :workflow-id "a"
+               :start       (h 0)
+               :start'      (h 1)
+               :last-check' (h 5)}
+              {:type        :incomplete,
+               :workflow-id "b"
+               :start       (h 2)
+               :start'      (h 3)
+               :last-check' (h 7)}]}
             :last-queue-size 1,
-            :error-types #{:abandoned :incomplete :task-never-executed}}
+            :error-types #{:incomplete :task-never-executed}}
            (check h)))))
 
 (deftest different-workflow-input-test
@@ -154,8 +156,10 @@
             :error-types #{:incomplete :task-never-executed :different-workflow-input}
             :incomplete {:count 1
                          :examples [{:type :incomplete
-                                     :id "w1"
-                                     :statuses [:running]}]}
+                                     :workflow-id "w1"
+                                     :start (h 2)
+                                     :start' (h 3)
+                                     :last-check' (h 1)}]}
             :task-never-executed {:count 1
                                   :examples [{:type :task-never-executed
                                               :workflow-id "w1"}]}
@@ -363,10 +367,32 @@
              {:process 2, :type :ok, :f :check-workflow, :value {:id "w1"
                                                                  :input {"in" "red"}
                                                                  :status :running}}])]
-    (is (= {:count 1
-            :examples [{:type         :never-started
-                        :workflow-id  "w1"}]}
-           (:never-started (check h))))))
+    (is (= {:valid? false
+            :started-count 0
+            :last-queue-size nil
+            :final-status-counts {:running 1}
+            :normal-types #{}
+            :error-types #{:task-never-executed :never-started :workflow-pending-ops}
+            :never-started {:count 1
+                            :examples [{:type         :never-started
+                                        :workflow-id  "w1"}]}
+            :workflow-pending-ops {:count 1
+                                   :examples [{:type :workflow-pending-ops
+                                               :workflow {:input-index -1
+                                                          :start-failed? false
+                                                          :errors #{}
+                                                          :start-index -1
+                                                          :last-check-index -1
+                                                          :pending #{(h 1)}
+                                                          :output nil
+                                                          :tasks {}
+                                                          :output-index -1
+                                                          :id "w1"
+                                                          :input nil}}]}
+            :task-never-executed {:count 1
+                                  :examples [{:type :task-never-executed
+                                              :workflow-id "w1"}]}}
+           (check h)))))
 
 (deftest g1a-test
   (let [h (h/history
