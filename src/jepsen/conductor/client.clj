@@ -222,7 +222,7 @@
               (assoc ~op :type :info, :error :connection-reset)
 
               #"^Failed to connect to"
-              (assoc ~op :type :fail, :error :failed-to-connect)
+              (assoc ~op :type :fail, :error [:failed-to-connect m#])
 
               #"^Internal Server Error"
               (assoc ~op :type :info, :error :internal-server-error)
