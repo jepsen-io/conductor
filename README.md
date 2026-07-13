@@ -65,6 +65,13 @@ A brief overview of namespaces:
   renders plots of queue size and startWorkflow requests; this is helpful for
   tuning the generator and seeing whether the cluster was overwhelmed.
 
+## Notes
+
+Conductor seems *much* slower to start and recover on the EC2 VMs I've been
+testing with. The default nemesis interval of 5 seconds is almost certainly too
+rapid; almost every operation will fail, preventing the test from doing
+anything interesting. I suggest 20 seconds or more.
+
 ## License
 
 Copyright © Jepsen, LLC
