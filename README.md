@@ -21,12 +21,26 @@ versions/5.3.2/lib/server.jar
 versions/5.3.2/lib/worker.jar
 ```
 
-If you've set up an AWS Marketplace Cloudformation cluster, you can run:
+If you've set up an AWS Marketplace Cloudformation cluster, you can run
+something like:
 
+```sh
+lein run test \
+  --username admin \
+  --nodes-file ~/nodes \
+  --version versions/5.4.0 \
+  --db-type postgres \
+  --nemesis kill-server \
+  --nemesis-interval 20 \
+  --target-error-types incomplete \
+  --time-limit 120 \
+  --test-count 20 \
 ```
-lein run test --username admin --nodes-file ~/nodes --time-limit 5
---nemesis-interval 20 --version versions/5.3.2
-```
+
+This will run a test on version 5.4.0, using Postgres as the main DB, killing
+the server nodes roughly every 20 seconds, and hunting specifically for an
+`incomplete` error, which occurs when a workflow is not complete at the end of
+the test.
 
 ## What's Here?
 
@@ -64,6 +78,9 @@ A brief overview of namespaces:
 - [`jepsen.conductor.checker.plots`](src/jepsen/conductor/checker/plots.clj)
   renders plots of queue size and startWorkflow requests; this is helpful for
   tuning the generator and seeing whether the cluster was overwhelmed.
+
+For an explanation of each kind of error, see
+[`jepsen.conductor.checker.workflow/checker`](src/jepsen/conductor/checker/workflow.clj).
 
 ## Notes
 
