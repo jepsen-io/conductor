@@ -7,6 +7,7 @@
             [clojure.tools.logging :refer [info warn]]
             [jepsen.conductor [base :refer :all]])
   (:import (io.orkes.conductor.client ApiClient)
+           (java.util.concurrent TimeUnit)
            (com.netflix.conductor.client.exception ConductorClientException)
            (com.netflix.conductor.client.http TaskClient
                                               WorkflowClient)
@@ -48,7 +49,10 @@
   "Opens an API client to the given server URL."
   [test server-url]
   ; I think we can just skip the auth key and secret?
-  (ApiClient. server-url nil nil))
+  (doto (ApiClient. server-url nil nil)
+    (.setReadTimeout 5 TimeUnit/SECONDS)
+    (.setWriteTimeout 5 TimeUnit/SECONDS)
+    (.setConnectTimeout 1 TimeUnit/SECONDS)))
 
 (defn api-client
   "Opens an API client *from* the given node in the test. This will pick one of
