@@ -383,9 +383,10 @@
         ; final phase, so every server should have been up for a while. I'm
         ; very confident it shouldn't return 404, but (e.g.) a 503 would also
         ; be weird.
-        (if (= -1 ::known-index)
+        (if (= -1 known-index)
           ; We don't know when this existed
           ::pending
+          ; We know it existed--is this a missing read?
           (check-missing this history op)))
 
       ; Some other :f
