@@ -31,6 +31,7 @@
   :aot [jepsen.conductor.cli]
   :jvm-opts ["-Djava.awt.headless=true"
              "-Djava.net.preferIPv4Stack=true"
+             ;"-XX:-OmitStackTraceInFastThrow"
              "-server"]
   :profiles {:uberjar {:aot :all}
              :dev {:dependencies [[criterium "0.4.6"]]}}
