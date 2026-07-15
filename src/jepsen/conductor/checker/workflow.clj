@@ -162,7 +162,7 @@
   are linearizable), and if so, returns workflow with a :missing error.
   Otherwise, returns workflow unchanged."
   [workflow history op]
-  (let [start  (h/get-index history (:start-index workflow))
+  (let [start (get-index history (:start-index workflow))
         start' (h/completion history start)
         invoke (h/invocation history op)]
     (if (or ; We started this read after the workflow was acknowledged as
@@ -183,7 +183,7 @@
                :start'      start'
                :read        invoke
                :read'       op})
-      ; Fine
+      ; Read concurrent or early
       workflow)))
 
 (defrecord Workflow [; The workflow run id
@@ -351,15 +351,17 @@
                    :errors errors')))
 
       :snarf-workflow
-      (case (:type op)
-        :invoke this
-        :ok     this
-        ; This may be overly conservative, but let's complain if the
-        ; snarf-workflow fails for *any* reason--it only happens during the
-        ; final phase, so every server should have been up for a while. I'm
-        ; very confident it shouldn't return 404, but (e.g.) a 503 would also
-        ; be weird.
-        (check-missing this history op))
+      (if (= -1 start-index)
+        ::pending
+        (case (:type op)
+          :invoke this
+          :ok     this
+          ; This may be overly conservative, but let's complain if the
+          ; snarf-workflow fails for *any* reason--it only happens during the
+          ; final phase, so every server should have been up for a while. I'm
+          ; very confident it shouldn't return 404, but (e.g.) a 503 would also
+          ; be weird.
+          (check-missing this history op)))
 
       ; Some other :f
       this))
