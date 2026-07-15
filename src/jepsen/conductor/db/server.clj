@@ -121,6 +121,8 @@
        ; Indexing
        "conductor.archive.db.indexer.enabled"
        (case (:db-type test)
+         ; If we set this option to true when using postgres as the DB, it
+         ; might (!?) cause workflow executions to spontanenously disappear.
          :postgres false
          :redis true)
 
@@ -144,6 +146,9 @@
 
        ; Metrics / actuator (what's an actuator?)
        "management.endpoints.web.exposure.include" "prometheus,health,mappings"
+
+       ; Added in 5.5.0-rc1; not sure what this does
+       "conductor.workflow.start-outbox.enabled" true
 
        ; Not sure what this does; should we lower it?
        ;"conductor.redis.eventExecutionPersistenceTTL" 86400
