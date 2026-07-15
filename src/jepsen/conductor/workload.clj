@@ -94,8 +94,9 @@
           (catch ExceptionInfo e
             (assoc op
                    :type :fail
-                   :error (select-keys (ex-data e)
-                                       [:status :headers :body]))))
+                   :error (-> (ex-data e)
+                              (select-keys [:status :headers :body])
+                              (update :body slurp)))))
 
         ; We use _deciderQueue as a proxy for overall system backlog
         :queue-size
