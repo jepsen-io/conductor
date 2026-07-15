@@ -422,3 +422,31 @@
                         :start'      (h 1)
                         :op          (h 4)}]}
            (:g1a (check h))))))
+
+(deftest missing-test
+  (let [h (h/history
+            [; We create a workflow and concurrently fail to observe it; this is fine
+             {:process 0, :type :invoke, :f :start-workflow, :value {:input :x}}
+             {:process 1, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 0, :type :ok, :f :start-workflow, :value "w1"}
+             {:process 1, :type :ok, :f :check-workflow, :value {:id "w1", :status :not-found}}
+             ; But if we start a read AFTER and fail to see it...
+             {:process 2, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 2, :type :ok, :f :check-workflow, :value {:id "w1", :status :not-found}}
+             ; Or if we snarf and get a 404...
+             {:process 3, :type :invoke, :f :snarf-workflow, :value "w1"}
+             {:process 3, :type :fail, :f :snarf-workflow, :value "w1"}])]
+    (is (= {:count 2
+            :examples [{:type :missing
+                        :workflow-id "w1"
+                        :start (h 0)
+                        :start' (h 2)
+                        :read (h 4)
+                        :read' (h 5)}
+                       {:type :missing
+                        :workflow-id "w1"
+                        :start (h 0)
+                        :start' (h 2)
+                        :read (h 6)
+                        :read' (h 7)}]}
+           (:missing (check h))))))

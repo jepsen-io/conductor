@@ -20,19 +20,20 @@
             [jepsen.conductor.checker.workflow :refer [checker]]
             [jepsen.history.fold :refer [loopf]]
             [tesser.core :as t])
-  (:import (com.netflix.conductor.client.exception ConductorClientException)))
+  (:import (com.netflix.conductor.client.exception ConductorClientException)
+           (clojure.lang ExceptionInfo)))
 
 (defn snarf-workflow-json!
   "Downloads the JSON for a single workflow."
   [test id]
-  (info "Snarfing workflow" id)
   (with-open [w (io/writer (store/path! test "workflows" (str id ".json")))]
     (let [node (-> test :roles :server rand/nth)
           url  (str "http://" node ":8080/api/workflow/" id
                     "?includeTasks=true")
           res (http/get url {:as :stream})
           json (json/parse-stream (io/reader (:body res)))]
-      (json/generate-stream json w {:pretty true}))))
+      (json/generate-stream json w {:pretty true
+                                    :throw-entire-message? true}))))
 
 (defrecord Client [api-client task-client workflow-client workflow-executor]
   client/Client
@@ -87,8 +88,14 @@
                :value (c/get-workflow workflow-client (:value op)))
 
         :snarf-workflow
-        (do (snarf-workflow-json! test (:value op))
-            (assoc op :type :ok, :value nil))
+        (try
+          (snarf-workflow-json! test (:value op))
+          (assoc op :type :ok)
+          (catch ExceptionInfo e
+            (assoc op
+                   :type :fail
+                   :error (select-keys (ex-data e)
+                                       [:status :headers :body]))))
 
         ; We use _deciderQueue as a proxy for overall system backlog
         :queue-size

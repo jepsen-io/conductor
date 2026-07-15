@@ -156,6 +156,36 @@
       (zero? (b/size outputs))
       (bs/add {:type :task-never-executed}))))
 
+(defn check-missing
+  "Takes a Workflow, a history, and a failed read. Tries to figure out
+  if the failed read would have been a stale read (assuming Workflows
+  are linearizable), and if so, returns workflow with a :missing error.
+  Otherwise, returns workflow unchanged."
+  [workflow history op]
+  (let [start  (h/get-index history (:start-index workflow))
+        start' (h/completion history start)
+        invoke (h/invocation history op)]
+    (if (or ; We started this read after the workflow was acknowledged as
+            ; started
+            (and (h/ok? start')
+                 (< (:index start') (:index invoke)))
+            ; We started this read after we learned the output, which
+            ; *must* have been an OK completion op.
+            (and (not= -1 (:output-index workflow))
+                 (< (:output-index workflow) (:index invoke)))
+            ; We could be more precise here (e.g. execute) but this
+            ; should hopefully be enough
+            )
+      (update workflow :errors bs/add
+              {:type        :missing
+               :workflow-id (:id workflow)
+               :start       start
+               :start'      start'
+               :read        invoke
+               :read'       op})
+      ; Fine
+      workflow)))
+
 (defrecord Workflow [; The workflow run id
                      id
                      ; The index of the start-workflow invocation.
@@ -217,13 +247,13 @@
               (not (h/ok? op))
               this
 
-              ; Not-found? Also nothing to learn
-              (identical? ::not-found (:status value))
-              this
-
               ; We haven't seen the start yet; come back later
               (= -1 start-index)
               ::pending
+
+              ; Not-found? This might be nonlinearizable.
+              (identical? :not-found (:status value))
+              (check-missing this history op)
 
               ; OK, figure out our inputs and outputs and errors
               true
@@ -319,6 +349,19 @@
             (assoc this
                    :tasks (bm/put tasks ref-name task')
                    :errors errors')))
+
+      :snarf-workflow
+      (case (:type op)
+        :invoke this
+        :ok     this
+        ; This may be overly conservative, but let's complain if the
+        ; snarf-workflow fails for *any* reason--it only happens during the
+        ; final phase, so every server should have been up for a while. I'm
+        ; very confident it shouldn't return 404, but (e.g.) a 503 would also
+        ; be weird.
+        (check-missing this history op))
+
+      ; Some other :f
       this))
 
   (flush-1 [this history]
@@ -493,6 +536,9 @@
 
                   :execute
                   (:workflow-instance-id (:value op))
+
+                  :snarf-workflow
+                  (:value op)
 
                   :start-workflow
                   (when (and op' (h/ok? op'))
@@ -935,6 +981,9 @@
 
       :incompatible-status  A workflow execution had a status we did not
                             expect.
+
+      :missing              A read of a workflow found it missing, after we
+                            know it definitely should have existed.
 
       :never-started        A workflow came into existence with no
                             corresponding start-workflow request.
