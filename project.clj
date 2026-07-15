@@ -3,7 +3,10 @@
   :url "https://github.com/jepsen/conductor"
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
             :url "https://www.eclipse.org/legal/epl-2.0/"}
-  :dependencies [[clj-http "3.13.1"]
+  :dependencies [[clj-http "3.13.1"
+                  :exclusions [commons-io
+                               commons-codec
+                               potemkin]]
                  [com.gfredericks/test.chuck "0.2.15"
                   :exclusions [org.clojure/test.check]]
                  [io.jepsen/postgres "0.1.2-SNAPSHOT"]
