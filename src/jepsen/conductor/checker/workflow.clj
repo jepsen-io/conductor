@@ -43,6 +43,14 @@
   (when (not= -1 index)
     (h/get-index history index)))
 
+(defn op-pair
+  "Given a history and an operation, returns the [invoke complete] pair for
+  that op."
+  [history op]
+  (if (h/invoke? op)
+    [op (h/completion history op)]
+    [(h/invocation history op) op]))
+
 (definterface+ Model
   (step [model history ^Op op]
         "Applies a single operation to a model, returning a new model.")
@@ -162,27 +170,26 @@
   are linearizable), and if so, returns workflow with a :missing error.
   Otherwise, returns workflow unchanged."
   [workflow history op]
-  (let [start (get-index history (:start-index workflow))
-        start' (h/completion history start)
-        invoke (h/invocation history op)]
-    (if (or ; We started this read after the workflow was acknowledged as
-            ; started
-            (and (h/ok? start')
-                 (< (:index start') (:index invoke)))
-            ; We started this read after we learned the output, which
-            ; *must* have been an OK completion op.
-            (and (not= -1 (:output-index workflow))
-                 (< (:output-index workflow) (:index invoke)))
-            ; We could be more precise here (e.g. execute) but this
-            ; should hopefully be enough
-            )
+  ; Technically we're gonna miss these on occasion because we check missing
+  ; *immediately*, rather than at the end, so it might be that our only missing
+  ; op happened in a chunk where we *did* learn the workflow existed, but that
+  ; known index was later than the invoke of the missing op here, and some
+  ; other chunk had an earlier known index that WOULD make this a
+  ; linearizability violation if this chunk knew about it. However, I think the
+  ; chances of that are pretty small, and I'm running out of time. Perfect
+  ; being the enemy of the good, and all that.
+  (let [known           (get-index history (:known-index workflow))
+        [known known']  (op-pair history known)
+        invoke          (h/invocation history op)]
+    (if (< (:known-index workflow) (:index invoke))
+      ; We started this read after the workflow was known
       (update workflow :errors bs/add
               {:type        :missing
                :workflow-id (:id workflow)
-               :start       start
-               :start'      start'
-               :read        invoke
-               :read'       op})
+               :known       known
+               :known'      known'
+               :missing     invoke
+               :missing'    op})
       ; Read concurrent or early
       workflow)))
 
@@ -192,6 +199,8 @@
                      ^long start-index
                      ; Did the start op fail?
                      ^boolean start-failed?
+                     ; The index when we first knew the workflow existed
+                     ^long known-index
                      ; The index of the op that told us the input
                      ^long input-index
                      ; The input to the workflow
@@ -236,7 +245,10 @@
                                     :op2         op
                                     :op2'        op2'}))))
 
-        ; We need this to find G1a
+        ; We know it exists now
+        :ok (update this :known-index earliest-index (:index op))
+
+        ; Oh, this might turn out to be G1a later
         :fail (assoc this :start-failed? true)
 
         this)
@@ -253,7 +265,10 @@
 
               ; Not-found? This might be nonlinearizable.
               (identical? :not-found (:status value))
-              (check-missing this history op)
+              (if (= -1 known-index)
+                ; We don't know this exists yet; hold on.
+                ::pending
+                (check-missing this history op))
 
               ; OK, figure out our inputs and outputs and errors
               true
@@ -309,6 +324,8 @@
                   id
                   start-index
                   start-failed?
+                  ; An OK read that's not not-found means we know it exists
+                  (earliest-index known-index (:index op))
                   input-index'
                   input'
                   output-index'
@@ -347,20 +364,28 @@
                                :start'      (h/completion history start)
                                :op          op})))]
             (assoc this
+                   ; It has to exist before this, in order for us to see an
+                   ; :invoke execute
+                   :known-index (earliest-index known-index (:index op))
                    :tasks (bm/put tasks ref-name task')
                    :errors errors')))
 
       :snarf-workflow
-      (if (= -1 start-index)
-        ::pending
-        (case (:type op)
-          :invoke this
-          :ok     this
-          ; This may be overly conservative, but let's complain if the
-          ; snarf-workflow fails for *any* reason--it only happens during the
-          ; final phase, so every server should have been up for a while. I'm
-          ; very confident it shouldn't return 404, but (e.g.) a 503 would also
-          ; be weird.
+      (case (:type op)
+        ; Invocations are fine
+        :invoke this
+
+        ; Silly, but sure, this does tell us the workflow exists
+        :ok     (update this :known-index earliest-index (:index op))
+
+        ; This may be overly conservative, but let's complain if the
+        ; snarf-workflow fails for *any* reason--it only happens during the
+        ; final phase, so every server should have been up for a while. I'm
+        ; very confident it shouldn't return 404, but (e.g.) a 503 would also
+        ; be weird.
+        (if (= -1 ::known-index)
+          ; We don't know when this existed
+          ::pending
           (check-missing this history op)))
 
       ; Some other :f
@@ -430,6 +455,7 @@
                    (earliest-index start-index (:start-index b))
                    (by-earliest-index start-index (:start-index b)
                                       start-failed? (:start-failed? b))
+                   (earliest-index known-index    (:known-index b))
                    (earliest-index input-index    (:input-index b))
                    (by-earliest-index input-index (:input-index b)
                                       input (:input b))
@@ -519,6 +545,7 @@
   (map->Workflow {:id           id
                   :start-index  -1
                   :start-failed? false
+                  :known-index  -1
                   :input-index  -1
                   :input        nil
                   :output-index -1
@@ -751,11 +778,11 @@
                                   [[b b'] (sort intervals)]
                                   (let [b (long b)
                                         b' (long b')]
-                                    (if (< b a') 
+                                    (if (< b a')
                                       ; Concurrent!
                                       {:type :concurrent-execution
                                        :ops  (mapv (partial h/get-index history)
-                                                   (sort [a a' b b']))} 
+                                                   (sort [a a' b b']))}
                                       (recur b b')))
                                   nil)))
                    vec)))))

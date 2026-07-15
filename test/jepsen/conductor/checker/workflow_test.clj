@@ -380,6 +380,7 @@
                                    :examples [{:type :workflow-pending-ops
                                                :workflow {:input-index -1
                                                           :start-failed? false
+                                                          :known-index -1
                                                           :errors #{}
                                                           :start-index -1
                                                           :last-check-index -1
@@ -437,16 +438,38 @@
              {:process 3, :type :invoke, :f :snarf-workflow, :value "w1"}
              {:process 3, :type :fail, :f :snarf-workflow, :value "w1"}])]
     (is (= {:count 2
-            :examples [{:type :missing
-                        :workflow-id "w1"
-                        :start (h 0)
-                        :start' (h 2)
-                        :read (h 4)
-                        :read' (h 5)}
+            :examples [
                        {:type :missing
                         :workflow-id "w1"
-                        :start (h 0)
-                        :start' (h 2)
-                        :read (h 6)
-                        :read' (h 7)}]}
+                        :known (h 0)
+                        :known' (h 2)
+                        :missing (h 6)
+                        :missing' (h 7)}
+                       {:type :missing
+                        :workflow-id "w1"
+                        :known    (h 0)
+                        :known'   (h 2)
+                        :missing  (h 4)
+                        :missing' (h 5)}
+                       ]}
+           (:missing (check h))))))
+
+(deftest missing-start-fails-test
+  (let [h (h/history
+            [; Start fails
+             {:process 0, :type :invoke, :f :start-workflow, :value {:input :x}}
+             {:process 0, :type :fail, :f :start-workflow}
+             ; But we know it exists
+             {:process 1, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 1, :type :ok, :f :check-workflow, :value {:id "w1", :status :running, :input :x}}
+             ; Then it vanishes
+             {:process 2, :type :invoke, :f :check-workflow, :value "w1"}
+             {:process 2, :type :ok, :f :check-workflow, :value {:id "w1", :status :not-found}}])]
+    (is (= {:count 1
+            :examples [{:type :missing
+                        :workflow-id "w1"
+                        :known    (h 2)
+                        :known'   (h 3)
+                        :missing  (h 4)
+                        :missing' (h 5)}]}
            (:missing (check h))))))
