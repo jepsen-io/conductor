@@ -181,8 +181,10 @@
   (let [known           (get-index history (:known-index workflow))
         [known known']  (op-pair history known)
         invoke          (h/invocation history op)]
-    (if (< (:known-index workflow) (:index invoke))
-      ; We started this read after the workflow was known
+    (if (and ; We started this read after the workflow was known
+             (< (:known-index workflow) (:index invoke))
+             ; Let's not bother reporting more than one per workflow]
+             (not-any? #{:missing} (map :type (:errors workflow))))
       (update workflow :errors bs/add
               {:type        :missing
                :workflow-id (:id workflow)
