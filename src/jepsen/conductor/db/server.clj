@@ -130,7 +130,7 @@
        "conductor.app.workflow-execution-lock-enabled" true
        "conductor.workflow-execution-lock.type" "orkes_lock"
        ; Default lease is 1m, but we want to stress this, so we'll go short
-       "conductor.workflow.lockLeaseTime" "1s"
+       "conductor.workflow.lockLeaseTime" (:lock-lease-time test "1s")
 
        ; Misc engine settings
        "conductor.secrets.type" "memory"
@@ -163,8 +163,8 @@
        }
 
       ; There is, we think, some kind of liveness or data-loss bug that occurs
-      ; when you kill Redis with a Postgres main DB. Version 5.4.0 fixes this
-      ; by adding this option.
+      ; when you kill Redis with a Postgres main DB. Version 5.4.0 hoped to fix
+      ; this with a new feature, controlled by this option.
       (and (= :postgres (:db-type test))
            (version<= "5.4.0" (:version test)))
       (assoc "conductor.queue.decider-queue.type" "postgres")
