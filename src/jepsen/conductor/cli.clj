@@ -94,7 +94,7 @@
     (concat ; Nothing
             [[]]
             ; Single faults
-            (sort specific-nemeses)
+            (map vector (sort specific-nemeses))
             ; Two single faults
             (for [a specific-nemeses
                   b specific-nemeses
