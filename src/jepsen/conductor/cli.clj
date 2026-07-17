@@ -93,6 +93,8 @@
   (vec
     (concat ; Nothing
             [[]]
+            ; Single faults
+            (sort specific-nemeses)
             ; Two single faults
             (for [a specific-nemeses
                   b specific-nemeses
@@ -104,8 +106,6 @@
                   c specific-nemeses
                   :when (distinct? a b c)]
               [a b c])
-            ; Single faults
-            (sort specific-nemeses)
             ; General chaos
             [[:partition :pause :kill :packet :clock]])))
 
