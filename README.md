@@ -6,8 +6,8 @@ A test suite for [Orkes Conductor](https://orkes.io/content).
 
 You'll need a [Jepsen
 environment](https://github.com/jepsen-io/jepsen#setting-up-a-jepsen-environment).
-We recommend at least eight nodes: one for Postgres, one for Redis, and two each
-for the server, worker, and standard worker. This test uses a lot of disk
+We recommend at least eight nodes: one for Postgres, one for Redis, and two
+each for the server, worker, and standard worker. This test uses a lot of disk
 space---try 48 GB for each DB node, and 128 GB for the control node.
 
 You will also need a directory for the Orkes Conductor build you'd like to
@@ -84,7 +84,7 @@ For an explanation of each kind of error, see
 
 ## Notes
 
-Conductor seems *much* slower to start and recover on the EC2 VMs I've been
+Conductor seems much slower to start and recover on the EC2 VMs I've been
 testing with. The default nemesis interval of 5 seconds is almost certainly too
 rapid; almost every operation will fail, preventing the test from doing
 anything interesting. I suggest 20 seconds or more.
