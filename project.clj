@@ -13,7 +13,7 @@
                  [io.jepsen/redis "0.2.0-SNAPSHOT"]
                  ; The Conductor clients pull in slightly older versions of
                  ; jackson and slf4j
-                 [jepsen "0.3.12-SNAPSHOT"
+                 [jepsen "0.3.12"
                   :exclusions [com.fasterxml.jackson.core/jackson-core]]
                  [org.conductoross/conductor-client "5.0.1"
                   :exclusions [com.fasterxml.jackson.core/jackson-core
